@@ -39,7 +39,9 @@ REQUIRED_CODES = ("wages_payable", "paye_payable", "er_nic_cost")
 OPTIONAL_CODES = ("pensions_payable", "er_pension_cost", "dividend_code",
                   "attachments_payable", "overpayment_code",
                   "payroll_giving_code", "childcare_code",
-                  "loans_repayment_code", "rounding_deduction_code")
+                  "loans_repayment_code", "rounding_deduction_code",
+                  "statutory_recovery_code", "ser_compensation_code",
+                  "apprenticeship_levy_cost")
 FREQUENCIES = ("monthly", "quarterly")
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

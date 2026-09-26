@@ -89,6 +89,16 @@ EMPLOYER_TOTALS = {
     "hmrc_due_for_period": r"Tax & NIC due for \S+",
     "hmrc_payment_for_period": r"Payment for \S+",
     "hmrc_balance_cf": r"Balance carried forward to \S+",
+    # EPS items. Moneysoft's exact labels for these are NOT yet verified on
+    # a live client (see docs/research/05); these patterns are deliberately
+    # broad so that when the block carries them they are captured rather
+    # than silently ignored. If a label is missed the PAYE reconciliation
+    # fails loudly and the run holds.
+    "statutory_recovery": r"(?:SMP|SPP|SAP|ShPP|SPBP|SNCP|Statutory (?:Pay|Payments?))"
+                          r"[^\n]*?(?:Recover(?:ed|able|y)|Reclaim(?:ed)?)",
+    "ser_compensation": r"(?:NIC|NI) Compensation[^\n]*?",
+    "cis_suffered": r"CIS (?:Deductions? )?Suffered",
+    "apprenticeship_levy": r"Apprenticeship Levy",
 }
 
 MONEY = re.compile(r"-?\d[\d,]*\.\d{2}")

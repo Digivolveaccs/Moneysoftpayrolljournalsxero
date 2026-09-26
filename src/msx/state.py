@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS journals (
     mapping_sha TEXT,
     source_sha TEXT,
     payload_sha TEXT,
+    ea TEXT,
+    er_nic TEXT,
     machine TEXT,
     note TEXT,
     created_at TEXT NOT NULL,
@@ -85,7 +87,27 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.run_id = None
+
+    def _migrate(self):
+        have = {r["name"] for r in self.db.execute("PRAGMA table_info(journals)")}
+        for col in ("ea", "er_nic"):
+            if col not in have:
+                self.db.execute(f"ALTER TABLE journals ADD COLUMN {col} TEXT")
+
+    def year_to_date(self, slug, tax_year_periods, exclude_period=None):
+        """Sum of EA and ER NIC recorded for the given periods of one client
+        (any status except failed/held), for the cumulative EA check."""
+        ea = er = 0.0
+        for r in self.all_rows():
+            if r["slug"] != slug or r["period"] not in tax_year_periods \
+                    or r["period"] == exclude_period \
+                    or r["status"] in ("failed", "held"):
+                continue
+            ea += float(r.get("ea") or 0)
+            er += float(r.get("er_nic") or 0)
+        return round(ea, 2), round(er, 2)
 
     def close(self):
         self.db.close()
@@ -198,9 +220,9 @@ class Ledger:
     def export_csv(self, path):
         rows = self.all_rows()
         cols = ["slug", "period", "status", "mode", "narration",
-                "journal_date", "total_debits", "paye_due", "xero_tenant_id",
-                "xero_journal_id", "mapping_sha", "source_sha", "machine",
-                "note", "created_at", "updated_at"]
+                "journal_date", "total_debits", "paye_due", "ea", "er_nic",
+                "xero_tenant_id", "xero_journal_id", "mapping_sha",
+                "source_sha", "machine", "note", "created_at", "updated_at"]
         tmp = path + ".tmp"
         with open(tmp, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)

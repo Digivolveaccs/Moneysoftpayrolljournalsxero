@@ -186,3 +186,99 @@ class Builder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class BuilderEpsAndEdgeCases(unittest.TestCase):
+    def setUp(self):
+        self.pay = summary_parser.parse_files(
+            [os.path.join(FIX, "browns_apr2026_tabbed.txt")])
+        self.cfg = load_mapping()
+
+    def test_tax_year_code_template(self):
+        cfg = copy.deepcopy(self.cfg)
+        cfg["codes"]["paye_payable"] = "821-{yy}-{yy1}"
+        j = journal_builder.build(self.pay, cfg)
+        paye = [l for l in j.lines if l.account_code == "821-26-27"]
+        self.assertEqual(f"{sum(l.amount for l in paye):.2f}", "-3311.93")
+        self.assertEqual(journal_builder.expand_code("821-{yy}-{yy1}", "2026-27"),
+                         "821-26-27")
+        self.assertEqual(journal_builder.expand_code("2210", "2026-27"), "2210")
+
+    def test_ea_catch_up_is_a_warning_when_the_tie_holds(self):
+        pay = copy.deepcopy(self.pay)
+        # mid-year claim: EA 2,500 against 1,946.01 of this month's ER NIC
+        pay["employer_totals"]["employment_allowance"] = -2500.0
+        pay["employer_totals"]["total_tax_nic_due"] = round(3311.93 - 553.99, 2)
+        pay["employer_totals"]["hmrc_due_for_period"] = pay["employer_totals"]["total_tax_nic_due"]
+        pay["employer_totals"]["total_net_outlay"] = round(35915.43 - 553.99, 2)
+        j = journal_builder.build(pay, self.cfg)
+        self.assertTrue(any("catch-up" in w for w in j.meta["warnings"]))
+        self.assertEqual(f"{j.meta['paye_due']:.2f}", "2757.94")
+        self.assertEqual(j.balance, 0)
+
+    def test_statutory_recovery_and_ser(self):
+        pay = copy.deepcopy(self.pay)
+        pay["employer_totals"]["statutory_recovery"] = 400.0
+        pay["employer_totals"]["ser_compensation"] = 34.0
+        pay["employer_totals"]["total_tax_nic_due"] = round(3311.93 - 434.0, 2)
+        pay["employer_totals"]["hmrc_due_for_period"] = pay["employer_totals"]["total_tax_nic_due"]
+        pay["employer_totals"]["total_net_outlay"] = round(35915.43 - 434.0, 2)
+        with self.assertRaises(Hold) as cm:
+            journal_builder.build(pay, self.cfg)
+        self.assertIn("statutory_recovery_code", str(cm.exception))
+        cfg = copy.deepcopy(self.cfg)
+        cfg["codes"]["statutory_recovery_code"] = "381"
+        cfg["codes"]["ser_compensation_code"] = "6002"
+        j = journal_builder.build(pay, cfg)
+        paye = sum(l.amount for l in j.lines if l.account_code == "2210")
+        self.assertEqual(f"{paye:.2f}", "-2877.93")
+        self.assertEqual(sum(1 for l in j.lines if "Statutory pay recovered" in l.description), 2)
+        self.assertEqual(j.balance, 0)
+
+    def test_cis_suffered_adds_back_without_a_line(self):
+        pay = copy.deepcopy(self.pay)
+        # Moneysoft prints the HMRC figure net of CIS set off on the EPS
+        pay["employer_totals"]["cis_suffered"] = 1000.0
+        pay["employer_totals"]["total_tax_nic_due"] = round(3311.93 - 1000.0, 2)
+        pay["employer_totals"]["hmrc_due_for_period"] = pay["employer_totals"]["total_tax_nic_due"]
+        pay["employer_totals"]["total_net_outlay"] = round(35915.43 - 1000.0, 2)
+        j = journal_builder.build(pay, self.cfg)
+        paye = sum(l.amount for l in j.lines if l.account_code == "2210")
+        self.assertEqual(f"{paye:.2f}", "-3311.93")      # pre-set-off liability
+        self.assertEqual(f"{j.meta['cis_suffered_eps']:.2f}", "1000.00")
+        self.assertFalse(any("CIS" in l.description for l in j.lines))
+
+    def test_unexplained_eps_difference_holds(self):
+        pay = copy.deepcopy(self.pay)
+        pay["employer_totals"]["total_tax_nic_due"] = 3000.0
+        pay["employer_totals"]["hmrc_due_for_period"] = 3000.0
+        with self.assertRaises(Hold) as cm:
+            journal_builder.build(pay, self.cfg)
+        self.assertIn("EPS item", str(cm.exception))
+
+    def test_negative_director_nic_true_up_is_allowed(self):
+        pay = copy.deepcopy(self.pay)
+        e = pay["employees"][2]                          # Trevor: ER NIC 437.45
+        e["er_nic"] = -50.0
+        delta = 437.45 + 50.0
+        pay["report_totals"]["er_nic"] = round(1946.01 - delta, 2)
+        pay["employer_totals"]["er_nic"] = pay["report_totals"]["er_nic"]
+        pay["employer_totals"]["employment_allowance"] = -pay["report_totals"]["er_nic"]
+        j = journal_builder.build(pay, self.cfg)
+        line = [l for l in j.lines if l.kind == "er_nic" and l.employee == e["name"]][0]
+        self.assertEqual(f"{line.amount:.2f}", "-50.00")
+        self.assertEqual(j.balance, 0)
+
+    def test_parser_captures_eps_labels(self):
+        with open(os.path.join(FIX, "browns_apr2026_tabbed.txt")) as fh:
+            text = fh.read()
+        text = text.replace("Total Tax & NIC Due\t3,311.93",
+                            "     SMP Recovered\t400.00\t\n     NIC Compensation on SMP\t34.00\t\n"
+                            "     CIS Suffered\t1,000.00\t\n     Apprenticeship Levy\t0.00\t\n"
+                            "Total Tax & NIC Due\t3,311.93", 1)
+        pay = summary_parser.parse_text(text)
+        et = pay["employer_totals"]
+        self.assertEqual(et["statutory_recovery"], 400.0)
+        self.assertEqual(et["ser_compensation"], 34.0)
+        self.assertEqual(et["cis_suffered"], 1000.0)
+        self.assertEqual(et["apprenticeship_levy"], 0.0)

@@ -33,6 +33,17 @@ def new_run_id(clock=None):
     return now.strftime("%Y-%m-%dT%H%M%S")
 
 
+def tax_year_periods(tax_year):
+    """'2026-27' -> ['Apr-2026', ..., 'Mar-2027']."""
+    start = int(tax_year.split("-")[0])
+    out = []
+    for i in range(12):
+        m = (3 + i) % 12          # Apr = index 3
+        y = start if m >= 3 else start + 1
+        out.append(f"{MONTHS[m]}-{y}")
+    return out
+
+
 def current_tax_year_start(today=None):
     today = today or datetime.date.today()
     start = today.year if (today.month, today.day) >= (4, 6) else today.year - 1
@@ -136,10 +147,26 @@ def process_group(ctx, client, period, files, summary):
                        "void the Xero journal and clear the ledger row "
                        f"(msx ledger clear {slug} {period})", stage="rerun")
 
+        # year-to-date Employment Allowance sanity (a mid-year claim can
+        # exceed one month's ER NIC, but never the annual maximum)
+        ytd_periods = tax_year_periods(journal.meta["tax_year"])
+        ea_ytd, er_ytd = ctx.ledger.year_to_date(slug, ytd_periods,
+                                                 exclude_period=period)
+        ea_max = float(ctx.cfg.data.get("ea_annual_max", 10500))
+        if float(journal.meta["ea"]) + ea_ytd > ea_max + 0.005:
+            raise Hold(f"employment allowance {journal.meta['ea']} this month "
+                       f"plus {ea_ytd:.2f} already recorded this tax year "
+                       f"exceeds the annual maximum {ea_max:.2f} - check the "
+                       "EPS claim / Analysis > Employer's NIC Allowance in "
+                       "Moneysoft", stage="reconcile")
+        for w in journal.meta.get("warnings", []):
+            summary["warnings"].append(f"{client} {period}: {w}")
         base = dict(client=client, period=period,
                     total_debits=f"{journal.total_debits:.2f}",
                     paye_due=f"{journal.meta['paye_due']:.2f}",
                     p30=p30_status)
+        ctx.ledger.upsert(slug, period, ea=f"{journal.meta['ea']:.2f}",
+                          er_nic=f"{journal.meta['er_nic']:.2f}")
         xero = ctx.xero_for(m) if mode != "shadow" else None
         try:
             res = poster.post_journal(journal, m, ctx.ledger, xero, mode=mode,

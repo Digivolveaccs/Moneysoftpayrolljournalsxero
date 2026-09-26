@@ -226,8 +226,18 @@ def resolve_journal_date(cfg, month_end, *, date_override=None, pay_date=None,
     return month_end
 
 
+def expand_code(code, tax_year):
+    """Tax-year templates in codes: '821-{yy}-{yy1}' -> '821-26-27' for
+    2026-27. Plain codes pass through unchanged."""
+    if not isinstance(code, str) or "{" not in code:
+        return code
+    start, end = tax_year.split("-")
+    return code.format(yy=start[2:], yy1=end, yyyy=start, yyyy1=str(int(start) + 1))
+
+
 def _code_for(cfg, emp_cfg, key, who, label, holds):
     code = emp_cfg.get(key) or cfg.get("codes", {}).get(key)
+    code = expand_code(code, cfg.get("_tax_year") or "0000-00")
     if not code:
         holds.append(f"no {key} account code for {who} ({label}) - add it to "
                      "the client mapping file")
@@ -263,6 +273,10 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
         raise Skip(f"nil payroll for {payroll.get('client')} "
                    f"{payroll.get('period')} - no journal, no client email",
                    reason="nil")
+    cfg = dict(cfg)
+    cfg["_tax_year"] = tax_year_of(payroll["period"])
+    codes = cfg.get("codes", {})
+    warnings = []
 
     month_name, tax_month, month_end, _ = period_parts(payroll["period"])
     tag = f"{month_name} (M{tax_month})"
@@ -321,25 +335,57 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
     # ---------- PAYE control must tie to the P30 / employer totals ----------
     ea = D(abs(employer.get("employment_allowance", 0.0)))
     if ea > er_nic_t + TOL:
-        holds.append(f"employment allowance {ea} exceeds employer NIC "
-                     f"{er_nic_t}")
+        # legitimate when the EA claim was made part-way through the year
+        # (HMRC applies it from 6 April, so the claim month carries the
+        # catch-up); the tie to Total Tax & NIC Due below still proves it
+        warnings.append(f"employment allowance {ea} exceeds this month's "
+                        f"employer NIC {er_nic_t} - year-to-date catch-up "
+                        "after a mid-year claim? The employer NIC cost code "
+                        "goes net negative this month")
+    # EPS items (see docs/research/05): each one changes what HMRC is owed
+    stat_rec = D(abs(employer.get("statutory_recovery", 0.0)))
+    ser_comp = D(abs(employer.get("ser_compensation", 0.0)))
+    cis_suff = D(abs(employer.get("cis_suffered", 0.0)))
+    levy = D(abs(employer.get("apprenticeship_levy", 0.0)))
+    if stat_rec and not codes.get("statutory_recovery_code"):
+        holds.append(f"statutory pay recovery {stat_rec} on the report but "
+                     "the mapping has no 'statutory_recovery_code' (usually "
+                     "the statutory pay / gross cost code)")
+    if ser_comp and not codes.get("ser_compensation_code"):
+        holds.append(f"small employers' relief compensation {ser_comp} on the "
+                     "report but the mapping has no 'ser_compensation_code' "
+                     "(employer NIC cost or other income)")
+    if levy and not codes.get("apprenticeship_levy_cost"):
+        holds.append(f"apprenticeship levy {levy} on the report but the "
+                     "mapping has no 'apprenticeship_levy_cost'")
     # Everything owed to HMRC through PAYE: tax, both NICs, student and
-    # postgraduate loan deductions. Attachments of earnings are owed to the
-    # court / DWP, never to HMRC, so they are a separate creditor.
-    paye_pre_ea = tax_t + ee_nic_t + er_nic_t + sl_t
+    # postgraduate loan deductions, apprenticeship levy. Attachments of
+    # earnings are owed to the court / DWP, never to HMRC.
+    paye_pre_ea = tax_t + ee_nic_t + er_nic_t + sl_t + levy
     if att_t and not codes.get("attachments_payable"):
         holds.append(f"attachments of earnings {att_t} on the report but the "
                      "mapping has no 'attachments_payable' code - add the "
                      "creditor code (court / DWP) before posting")
+    # CIS suffered is set off on the EPS but is booked in Xero from the
+    # receipts side (cis-tax-deducted: Dr PAYE / Cr 1300). The wages journal
+    # must therefore credit PAYE control BEFORE the CIS set-off, and the
+    # reconciliation adds the EPS figure back.
+    hmrc_movement = paye_pre_ea - ea - stat_rec - ser_comp
     if "total_tax_nic_due" in employer:
         due = D(employer["total_tax_nic_due"])
-        if abs(paye_pre_ea - ea - due) > TOL:
+        if abs(hmrc_movement - cis_suff - due) > TOL:
             holds.append(
                 f"PAYE tax {tax_t} + EE NIC {ee_nic_t} + ER NIC {er_nic_t}"
                 + (f" + student/postgrad loan {sl_t}" if sl_t else "")
-                + f" - employment allowance {ea} = {paye_pre_ea - ea}, but "
-                f"the report says Total Tax & NIC Due {due} (statutory "
-                "recovery / CIS suffered / apprenticeship levy on the EPS?)")
+                + (f" + apprenticeship levy {levy}" if levy else "")
+                + f" - employment allowance {ea}"
+                + (f" - statutory recovery {stat_rec}" if stat_rec else "")
+                + (f" - SER compensation {ser_comp}" if ser_comp else "")
+                + (f" - CIS suffered {cis_suff}" if cis_suff else "")
+                + f" = {hmrc_movement - cis_suff}, but the report says Total "
+                f"Tax & NIC Due {due} (an EPS item - statutory recovery, CIS "
+                "suffered, apprenticeship levy - the parser did not capture? "
+                "Check the Employer Totals block and docs/research/05)")
         if "hmrc_due_for_period" in employer:
             if abs(D(employer["hmrc_due_for_period"]) - due) > TOL:
                 holds.append(
@@ -458,6 +504,9 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
                     str(codes["attachments_payable"]), -a, "attachments",
                     e["name"]))
     if paye_line_amount:
+        # one credit for the gross liability; EA, statutory recovery and SER
+        # compensation are explicit Dr pairs below, so the code nets to the
+        # amount HMRC is owed before any CIS set-off
         lines.append(Line(f"PAYE/NIC payable - {tag}",
                           _code_for(cfg, {}, "paye_payable", "the payroll",
                                     "PAYE control", holds),
@@ -476,9 +525,36 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
             -(ee_p + er_p), "pension_payable", e["name"]))
     if ea:
         lines.append(Line(f"Employment allowance - {tag}",
-                          codes.get("paye_payable"), ea, "ea_paye"))
+                          _code_for(cfg, {}, "paye_payable", "the payroll",
+                                    "employment allowance", holds), ea,
+                          "ea_paye"))
         lines.append(Line(f"Employment allowance - {tag}",
-                          codes.get("er_nic_cost"), -ea, "ea_er_nic"))
+                          _code_for(cfg, {}, "er_nic_cost", "the payroll",
+                                    "employment allowance", holds), -ea,
+                          "ea_er_nic"))
+    if stat_rec and codes.get("statutory_recovery_code"):
+        lines.append(Line(f"Statutory pay recovered - {tag}",
+                          _code_for(cfg, {}, "paye_payable", "the payroll",
+                                    "statutory recovery", holds), stat_rec,
+                          "stat_rec_paye"))
+        lines.append(Line(f"Statutory pay recovered - {tag}",
+                          _code_for(cfg, {}, "statutory_recovery_code",
+                                    "the payroll", "statutory recovery",
+                                    holds), -stat_rec, "stat_rec_cost"))
+    if ser_comp and codes.get("ser_compensation_code"):
+        lines.append(Line(f"Small employers' relief compensation - {tag}",
+                          _code_for(cfg, {}, "paye_payable", "the payroll",
+                                    "SER compensation", holds), ser_comp,
+                          "ser_paye"))
+        lines.append(Line(f"Small employers' relief compensation - {tag}",
+                          _code_for(cfg, {}, "ser_compensation_code",
+                                    "the payroll", "SER compensation", holds),
+                          -ser_comp, "ser_income"))
+    if levy and codes.get("apprenticeship_levy_cost"):
+        lines.append(Line(f"Apprenticeship levy - {tag}",
+                          _code_for(cfg, {}, "apprenticeship_levy_cost",
+                                    "the payroll", "apprenticeship levy",
+                                    holds), levy, "levy_cost"))
 
     balance = sum((l.amount for l in lines), ZERO)
     if balance != ZERO:
@@ -500,7 +576,10 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
         "gross": sum((l.amount for l in gross_lines), ZERO),
         "dividends": sum((l.amount for l in div_lines), ZERO),
         "er_nic": er_nic_t, "paye_pre_ea": paye_pre_ea, "ea": ea,
-        "paye_due": paye_pre_ea - ea,
+        "paye_due": hmrc_movement,
+        "statutory_recovery": stat_rec, "ser_compensation": ser_comp,
+        "cis_suffered_eps": cis_suff, "apprenticeship_levy": levy,
+        "warnings": warnings,
         "pensions": ee_pen_t + er_pen_t, "ee_pension": ee_pen_t,
         "er_pension": er_pen_t, "net": net_t,
         "attachments": att_t, "student_loans": sl_t,
