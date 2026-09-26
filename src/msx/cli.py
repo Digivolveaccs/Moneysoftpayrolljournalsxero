@@ -109,17 +109,38 @@ def cmd_build(args):
 def cmd_approve(args):
     cfg = config_mod.load(args.config)
     mappings = mapping_mod.load_all(cfg.clients_dir)
-    m = mappings[args.slug]
     led = state.Ledger(cfg.state_db, machine=cfg.machine_name)
-    xero = make_xero_factory(cfg)((m.cfg.get("xero") or {}).get("app", "default"))
+    factory = make_xero_factory(cfg)
+    targets = []
+    if args.all_drafts:
+        for r in led.all_rows(status="draft"):
+            if args.period and r["period"] != args.period:
+                continue
+            if r["slug"] in mappings:
+                targets.append((r["slug"], r["period"]))
+    else:
+        if not (args.slug and args.period):
+            print("usage: approve SLUG Mon-YYYY | approve --all-drafts [--period]")
+            led.close()
+            return 2
+        targets.append((args.slug, args.period))
+    rc = 0
     try:
-        j = poster.approve(args.slug, args.period, led, xero)
-        print("posted:", j.get("ManualJournalID"), j.get("Status"))
-    except Skip as exc:
-        print("skip:", exc)
+        for slug, period in targets:
+            m = mappings[slug]
+            xero = factory((m.cfg.get("xero") or {}).get("app", "default"))
+            try:
+                j = poster.approve(slug, period, led, xero)
+                print(f"posted: {slug} {period} -> {j.get('ManualJournalID')} "
+                      f"{j.get('Status')}")
+            except Skip as exc:
+                print(f"skip: {slug} {period} - {exc}")
+            except (Hold, xero_client.XeroError) as exc:
+                print(f"HOLD: {slug} {period} - {exc}")
+                rc = 2
     finally:
         led.close()
-    return 0
+    return rc
 
 
 def cmd_status(args):
@@ -382,8 +403,10 @@ def main(argv=None):
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("approve", help="promote a DRAFT the pipeline created")
-    p.add_argument("slug")
-    p.add_argument("period")
+    p.add_argument("slug", nargs="?")
+    p.add_argument("period", nargs="?")
+    p.add_argument("--all-drafts", action="store_true",
+                   help="every ledger row in draft (optionally --period)")
     p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("status")

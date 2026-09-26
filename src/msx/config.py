@@ -26,8 +26,15 @@ Keys::
                  "from_name": "Digivolve Payroll",
                  "heartbeat_file": "<optional path touched after every run>",
                  "heartbeat_url": "<optional healthchecks.io-style ping URL>"},
-      "machine_name": "matt-mac"
+      "machine_name": "matt-mac",
+      "role": "primary" | "standby",
+      "primary_heartbeat_file": "<standby only: Dropbox-synced copy of the primary's heartbeat>",
+      "ea_annual_max": 10500,
+      "dropbox": { ... cloud fallback, see msx/dropbox_sync.py ... }
     }
+
+notify.graph = {tenant_id, client_id, secret_file, from_address} enables the
+Microsoft Graph sendMail fallback when Missive fails.
 """
 import json
 import os

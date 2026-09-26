@@ -40,14 +40,16 @@ bin/msx recon                        # read-only: ledger vs Xero, this tax year
 bin/msx onboard <summary.pdf...>     # propose clients/<slug>.json from Xero history
 bin/msx build <summary.pdf...>       # parse + build + CSV only, no Xero (for checking)
 bin/msx approve <slug> <Mon-YYYY>    # promote the pipeline's DRAFT to POSTED
+bin/msx approve --all-drafts [--period Mon-YYYY]   # after Matt has reviewed them in Xero
 bin/msx chart <slug>                 # the org's chart of accounts (for mapping)
 bin/msx auth login|check|tenants     # Xero connection (human signs in)
 bin/msx ledger clear <slug> <period> # only after a human voided the Xero journal
 ```
 
 Exit code 2 = something is held; 3 = configuration/auth problem. Read
-`~/.config/msx/out/HOLDS.md` after every run; the run report is also emailed
-to Matt through Missive when anything was posted or held.
+`~/.config/msx/out/HOLDS.md` after every run; the run report is emailed to
+Matt through Missive when anything was posted, or when the set of holds
+changed (a standing hold is reported once, not every half hour).
 
 ## Triage HOLDS.md - the routine
 
