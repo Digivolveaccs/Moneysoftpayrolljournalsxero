@@ -190,6 +190,46 @@ class RunnerTests(unittest.TestCase):
         s2 = self.run_once(take_over=True)
         self.assertEqual(len(s2["posted"]), 2)
 
+    def test_mode_change_is_not_a_rerun_and_rerun_is_not_hidden(self):
+        self.set_mode("draft")
+        s = self.run_once()
+        self.assertEqual(len(s["draft"]), 2)
+        self.set_mode("post")                    # promotion: nothing re-posts
+        s2 = self.run_once()
+        self.assertEqual(s2["held"], [])
+        self.assertEqual(len(self.xero.created), 2)
+        # a genuine figure change after the promotion is still caught
+        folder = os.path.join(self.pdf_root,
+                              "Browns Garage (Haywards Heath) Limited 2026-27")
+        p = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                         " - Employer's Summary for Jul-2026.txt")
+        with open(p) as fh:
+            text = fh.read()
+        text = text.replace("Sally Jones            K96      702.00       702.00",
+                            "Sally Jones            K96      802.00       802.00")
+        with open(p, "w") as fh:
+            fh.write(text)
+        os.utime(p, (1_600_000_000, 1_600_000_000))
+        s3 = self.run_once()
+        # the edited report no longer reconciles to its own totals -> held at
+        # build, or if it did reconcile -> held as a rerun; either way held
+        self.assertEqual(len(s3["held"]), 1)
+
+    def test_holds_reported_once_until_they_change(self):
+        with open(os.path.join(self.clients, "browns-garage-haywards-heath.json")) as fh:
+            cfg = json.load(fh)
+        del cfg["employees"]["Sally Jones"]          # unmapped employee -> hold
+        with open(os.path.join(self.clients, "browns-garage-haywards-heath.json"), "w") as fh:
+            json.dump(cfg, fh)
+        s = self.run_once()
+        self.assertEqual(len(s["held"]), 2)
+        self.assertTrue(runner.holds_changed(self.cfg.out_dir, s))
+        self.assertFalse(runner.holds_changed(self.cfg.out_dir, s))
+        self.assertEqual(runner.system_problems(s), [])
+        s["held"].append({"client": "x", "period": "y", "stage": "bug",
+                          "note": "boom"})
+        self.assertEqual(len(runner.system_problems(s)), 1)
+
     def test_run_lock_refuses_second_run(self):
         from msx.errors import Hold
         with runner.RunLock(self.cfg.state_db + ".lock"):

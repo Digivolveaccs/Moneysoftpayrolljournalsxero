@@ -249,7 +249,8 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
 
     payload = journal.to_api_payload(
         status="POSTED" if mode == "post" else "DRAFT", url=url)
-    payload_sha = payload_fingerprint(payload)
+    payload_sha = journal.figures_fingerprint()      # status-independent
+    request_sha = payload_fingerprint(payload)       # exact bytes sent
     base = dict(narration=journal.narration, journal_date=journal.iso_date(),
                 total_debits=f"{journal.total_debits:.2f}",
                 paye_due=f"{journal.meta['paye_due']:.2f}",
@@ -302,7 +303,7 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
             and row.get("payload_sha") == payload_sha:
         idem = row["idempotency_key"]
     idem = idem or hashlib.sha256(
-        f"{tid}|{journal.narration}|{journal.iso_date()}|{payload_sha}"
+        f"{tid}|{journal.narration}|{journal.iso_date()}|{request_sha}"
         .encode()).hexdigest()
     ledger.mark_intent(slug, period, xero_tenant_id=tid, idempotency_key=idem,
                        **base)

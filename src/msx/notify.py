@@ -159,11 +159,12 @@ def heartbeat(notify_cfg, summary, *, opener=None):
     url = notify_cfg.get("heartbeat_url")
     if url:
         body = None
-        if summary["held"] or summary.get("failed"):
+        problems = summary.get("system_problems") or []
+        if problems or summary.get("failed"):
+            # /fail only for pipeline-level faults; a client hold is a human
+            # task reported by email, not an outage
             url = url.rstrip("/") + "/fail"       # healthchecks.io convention
-            body = "\n".join(f"{h['client']} {h['period']}: "
-                             f"{(h.get('note') or '').splitlines()[0][:200]}"
-                             for h in summary["held"])[:10000].encode("utf-8")
+            body = "\n".join(problems)[:10000].encode("utf-8") or b"failed"
         try:
             req = urllib.request.Request(url, data=body, method="POST" if body
                                          else "GET")

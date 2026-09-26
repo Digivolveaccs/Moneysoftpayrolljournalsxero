@@ -37,6 +37,7 @@ import calendar
 import csv
 import datetime
 import io
+import json
 import re
 from decimal import Decimal
 
@@ -164,6 +165,17 @@ class Journal:
         if url:
             body["Url"] = url
         return body
+
+    def figures_fingerprint(self):
+        """SHA-256 of what the journal *is* (date, narration, lines) -
+        independent of DRAFT/POSTED status, so a mode change is never
+        mistaken for a payroll re-run and a re-run is never hidden by one."""
+        import hashlib
+        canon = json.dumps({"d": self.iso_date(), "n": self.narration,
+                            "l": [[l.account_code, f"{l.amount:.2f}",
+                                   l.description] for l in self.lines]},
+                           sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
     def summary(self):
         m = self.meta

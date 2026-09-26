@@ -138,11 +138,9 @@ def process_group(ctx, client, period, files, summary):
 
         # figures changed after we posted? (payroll re-run) -> human
         mode = ctx.mode_override or m.mode
-        payload_sha = poster.payload_fingerprint(journal.to_api_payload(
-            status="POSTED" if mode == "post" else "DRAFT"))
+        payload_sha = journal.figures_fingerprint()
         if row and row.get("xero_journal_id") and row.get("payload_sha") \
-                and row["payload_sha"] != payload_sha \
-                and row.get("mode") == mode:
+                and row["payload_sha"] != payload_sha:
             raise Hold(f"the Employer's Summary now builds a different journal "
                        f"(Dr {journal.total_debits}) from the one already in "
                        f"Xero as {row['xero_journal_id']} (Dr "
@@ -255,6 +253,41 @@ def process_group(ctx, client, period, files, summary):
             ctx.ledger.mark_held(slug, period, note)
         summary["held"].append(_entry(client, period, stage="bug", note=note))
         log(f"{client} {period}: ERROR - {exc}")
+
+
+def system_problems(summary):
+    """Run-level faults that mean the PIPELINE is broken (as opposed to a
+    client needing a human): bugs, config/lock/auth, Xero down."""
+    out = [f"{h['client']} {h['period']}: {h['note'].splitlines()[0][:120]}"
+           for h in summary["held"] if h.get("stage") in ("bug", "lock",
+                                                          "config", "verify")]
+    out += [w for w in summary.get("warnings", [])
+            if "AUTH REQUIRED" in w or "deferred" in w or "keep-alive failed" in w]
+    return out
+
+
+def holds_changed(out_dir, summary):
+    """True when the set of held (client, period, first line) differs from
+    the last run that was reported - so a standing hold is emailed once,
+    not every 30 minutes. Persists the fingerprint in out_dir."""
+    import hashlib
+    key = "\n".join(sorted(f"{h['client']}|{h['period']}|"
+                           f"{(h.get('note') or '').splitlines()[0]}"
+                           for h in summary["held"]))
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    path = os.path.join(out_dir, ".last_holds_reported")
+    prev = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            prev = fh.read().strip()
+    except FileNotFoundError:
+        pass
+    if prev == digest:
+        return False
+    os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(digest)
+    return True
 
 
 def keepalive(cfg, ledger, xero_factory, summary, log, every_days=7):
@@ -421,8 +454,10 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
               encoding="utf-8") as fh:
         json.dump(summary, fh, indent=1, default=str)
     if notify_enabled:
-        actionable = summary["held"] or summary["posted"] or summary["draft"] \
-            or summary["failed"] or summary["pending"]
+        summary["system_problems"] = system_problems(summary)
+        changed = holds_changed(cfg.out_dir, summary)
+        actionable = summary["posted"] or summary["draft"] or summary["failed"] \
+            or (summary["held"] and changed) or summary["system_problems"]
         if actionable or cfg.notify.get("report_always"):
             res = notify.send_missive_report(cfg.notify,
                                              notify.report_subject(summary),
