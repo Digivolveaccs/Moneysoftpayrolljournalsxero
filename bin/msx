@@ -1,0 +1,7 @@
+#!/bin/bash
+# msx - Moneysoft -> Xero payroll journals. Wrapper so the command works from
+# anywhere without installing the package: `bin/msx run --dry-run`.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m msx.cli "$@"

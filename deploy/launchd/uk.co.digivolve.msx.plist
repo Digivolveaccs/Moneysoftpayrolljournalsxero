@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Runs `msx run` every 30 minutes on the ONE Mac designated as the poster.
+       Install:  cp deploy/launchd/uk.co.digivolve.msx.plist ~/Library/LaunchAgents/
+                 sed -i '' "s#__REPO__#$HOME/Moneysoftpayrolljournalsxero#g" ~/Library/LaunchAgents/uk.co.digivolve.msx.plist
+                 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/uk.co.digivolve.msx.plist
+       Logs:     ~/.config/msx/launchd.log
+       A run is idempotent, so a 30-minute cadence costs nothing when there is
+       nothing new; it also refreshes the Xero token well inside the 60-day
+       refresh-token life and writes the heartbeat. -->
+  <key>Label</key>
+  <string>uk.co.digivolve.msx</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/bin/msx</string>
+    <string>run</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/.config/msx/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/.config/msx/launchd.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

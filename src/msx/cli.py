@@ -7,6 +7,7 @@
     python3 -m msx.cli status [--period Mon-YYYY] [--held]
     python3 -m msx.cli ledger clear SLUG Mon-YYYY
     python3 -m msx.cli auth login|tenants|check [--app NAME]
+    python3 -m msx.cli onboard REPORT... [--org NAME]   # propose a mapping
     python3 -m msx.cli chart SLUG            # dump the org's chart of accounts
     python3 -m msx.cli doctor                # config, folders, mappings, tools
 
@@ -182,6 +183,39 @@ def cmd_auth(args):
     return 0
 
 
+def cmd_onboard(args):
+    """Propose clients/<slug>.json from the client's own Xero history."""
+    from . import onboard
+    cfg = config_mod.load(args.config)
+    payroll = summary_parser.parse_files(args.reports)
+    stub = onboard.stub_for(payroll, org_name=args.org)
+    if args.slug:
+        stub["slug"] = args.slug
+    xero = make_xero_factory(cfg)(args.app)
+    m, report = onboard.propose(payroll, xero, stub, months=args.months)
+    m["xero"]["app"] = args.app
+    print(f"org: {report['tenant']['name']} ({report['tenant']['tenant_id']})")
+    print(f"wages journals seen in the last {args.months} months: "
+          f"{report['journals_seen']}")
+    for ev in report["evidence"][:40]:
+        print("  ", ev)
+    if report["unresolved_lines"]:
+        print(f"{len(report['unresolved_lines'])} journal line(s) could not be "
+              "classified (shown so a human can decide):")
+        for c in report["unresolved_lines"][:20]:
+            print(f"   {c['code']:>8} {c['amount']:>10.2f} {c['description'][:70]}")
+    if report["placeholders"]:
+        print("placeholders to fill before leaving shadow mode:",
+              ", ".join(report["placeholders"]))
+    try:
+        path = onboard.write_mapping(m, cfg.clients_dir, overwrite=args.overwrite)
+    except FileExistsError as exc:
+        print(f"mapping already exists: {exc} (use --overwrite to replace)")
+        return 2
+    print("wrote", path, "(mode shadow)")
+    return 0
+
+
 def cmd_chart(args):
     cfg = config_mod.load(args.config)
     mappings = mapping_mod.load_all(cfg.clients_dir)
@@ -295,6 +329,18 @@ def main(argv=None):
     p.add_argument("action", choices=("login", "tenants", "check"))
     p.add_argument("--app", default="default")
     p.set_defaults(func=cmd_auth)
+
+    p = sub.add_parser("onboard", help="propose a client mapping from the "
+                       "client's own posted wages journals in Xero")
+    p.add_argument("reports", nargs="+", help="the client's latest Employer's "
+                   "Summary (PDF/txt), all layouts")
+    p.add_argument("--org", help="Xero organisation name if it differs from "
+                   "the report header")
+    p.add_argument("--slug")
+    p.add_argument("--app", default="default")
+    p.add_argument("--months", type=int, default=6)
+    p.add_argument("--overwrite", action="store_true")
+    p.set_defaults(func=cmd_onboard)
 
     p = sub.add_parser("chart", help="print a client org's chart of accounts")
     p.add_argument("slug")

@@ -1,0 +1,33 @@
+{
+  "_comment": "Copy to ~/.config/msx/config.json on the machine that posts. Never commit the real file.",
+  "machine_name": "matt-mac",
+  "pdf_root": "~/Library/CloudStorage/Dropbox-Personal/Dropbox - Moneysoft Backups/PDF attachments",
+  "clients_dir": "~/Moneysoftpayrolljournalsxero/clients",
+  "state_db": "~/.config/msx/state.sqlite",
+  "out_dir": "~/.config/msx/out",
+  "ledger_csv": "~/Library/CloudStorage/Dropbox-Personal/Dropbox - Moneysoft Backups/Xero journals/ledger.csv",
+  "default_mode": "shadow",
+  "settle_seconds": 30,
+  "stability_sample_seconds": 1.0,
+  "xero": {
+    "client_id": "PUT-THE-PKCE-APP-CLIENT-ID-HERE",
+    "redirect_uri": "http://localhost:8400/callback",
+    "token_store": "keychain",
+    "scopes": ["offline_access", "accounting.manualjournals",
+               "accounting.manualjournals.read", "accounting.settings.read"],
+    "apps": {
+      "_comment": "Optional extra PKCE apps when one app's connection cap is reached; a client mapping selects one with xero.app.",
+      "batch2": {"client_id": ""}
+    }
+  },
+  "notify": {
+    "missive_token_file": "~/.config/msx/missive_token",
+    "organization": "",
+    "from_address": "payroll@digivolve.co.uk",
+    "from_name": "Digivolve Payroll",
+    "report_to": "matthew@digivolve.co.uk",
+    "report_always": false,
+    "heartbeat_file": "~/.config/msx/heartbeat.json",
+    "heartbeat_url": ""
+  }
+}

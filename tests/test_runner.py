@@ -54,9 +54,11 @@ class RunnerTests(unittest.TestCase):
 
     def set_mode(self, mode):
         p = os.path.join(self.clients, "browns-garage-haywards-heath.json")
-        cfg = json.load(open(p))
+        with open(p) as fh:
+            cfg = json.load(fh)
         cfg["mode"] = mode
-        json.dump(cfg, open(p, "w"))
+        with open(p, "w") as fh:
+            json.dump(cfg, fh)
 
     def run_once(self, **kw):
         return runner.run_once(self.cfg, xero_factory=lambda app: self.xero,
@@ -104,7 +106,8 @@ class RunnerTests(unittest.TestCase):
                               "Browns Garage (Haywards Heath) Limited 2026-27")
         p = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
                          " - Employer's Summary for Apr-2026.txt")
-        text = open(p).read()
+        with open(p) as fh:
+            text = fh.read()
         text = text.replace("Sally Jones\tK92*\t702.00\t702.00", "Sally Jones\tK92*\t802.00\t802.00")
         text = text.replace("155.80\t \t546.20", "175.80\t \t626.20")
         # keep the report's own totals consistent with the edit
@@ -116,7 +119,8 @@ class RunnerTests(unittest.TestCase):
         text = text.replace("Total Tax & NIC Due\t3,311.93", "Total Tax & NIC Due\t3,331.93")
         text = text.replace("Tax & NIC due for Apr-2026\t3,311.93", "Tax & NIC due for Apr-2026\t3,331.93")
         text = text.replace("TOTAL NET OUTLAY\t35,915.43", "TOTAL NET OUTLAY\t36,015.43")
-        open(p, "w").write(text)
+        with open(p, "w") as fh:
+            fh.write(text)
         os.utime(p, (1_600_000_000, 1_600_000_000))
         s2 = self.run_once()
         self.assertEqual(len(s2["held"]), 1)
