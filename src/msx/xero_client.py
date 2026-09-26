@@ -43,8 +43,11 @@ TOKEN_URL = "https://identity.xero.com/connect/token"
 CONNECTIONS_URL = "https://api.xero.com/connections"
 API_BASE = "https://api.xero.com/api.xro/2.0"
 
-DEFAULT_SCOPES = ("openid", "profile", "email", "offline_access",
-                  "accounting.transactions", "accounting.settings.read")
+# Granular scopes (required for apps created after Xero's scope split);
+# an app created earlier may use the broad "accounting.transactions" instead
+# - override with config xero.scopes.
+DEFAULT_SCOPES = ("offline_access", "accounting.manualjournals",
+                  "accounting.manualjournals.read", "accounting.settings.read")
 
 USER_AGENT = "digivolve-msx/0.1 (moneysoft-to-xero payroll journals)"
 
@@ -261,10 +264,10 @@ class XeroClient:
                 if self.client_secret:      # custom connection: no refresh
                     self._tokens = self._token_request(
                         {"grant_type": "client_credentials",
-                         "scope": " ".join(s for s in self.scopes
-                                           if s not in ("openid", "profile",
-                                                        "email",
-                                                        "offline_access"))})
+                         "scope": " ".join(sc for sc in self.scopes
+                                           if sc not in ("openid", "profile",
+                                                         "email",
+                                                         "offline_access"))})
                     self.token_store.save(self._tokens)
                 else:
                     raise AuthRequired("no Xero token - run: msx auth login")
@@ -278,9 +281,9 @@ class XeroClient:
         if self.client_secret:
             self._tokens = self._token_request(
                 {"grant_type": "client_credentials",
-                 "scope": " ".join(s for s in self.scopes
-                                   if s not in ("openid", "profile", "email",
-                                                "offline_access"))})
+                 "scope": " ".join(sc for sc in self.scopes
+                                   if sc not in ("openid", "profile", "email",
+                                                 "offline_access"))})
             self.token_store.save(self._tokens)
             return
         rt = self._tokens.get("refresh_token")
@@ -458,8 +461,9 @@ class XeroClient:
     # ------------------------------------------------------------ writes
 
     def create_manual_journal(self, tenant_id, payload, *, idempotency_key=None):
-        """POST one manual journal. Returns the created journal dict."""
-        data = self._call("POST", f"{API_BASE}/ManualJournals",
+        """PUT one manual journal (create-only, never update). Returns the
+        created journal dict."""
+        data = self._call("PUT", f"{API_BASE}/ManualJournals",
                           tenant_id=tenant_id, body={"ManualJournals": [payload]},
                           params={"summarizeErrors": "false"},
                           idempotency_key=idempotency_key, max_attempts=1)

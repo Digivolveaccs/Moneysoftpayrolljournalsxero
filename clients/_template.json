@@ -1,0 +1,42 @@
+{
+  "client": "Client Name Ltd",
+  "slug": "client-name",
+  "moneysoft_employer": "Client Name Limited",
+  "aliases": [],
+  "xero": {
+    "org_name": "Client Name Ltd",
+    "tenant_id": "",
+    "app": "default"
+  },
+  "mode": "shadow",
+  "journal_date": "month_end",
+  "narration": "Payroll - {tag}",
+  "tax_rate": "No VAT",
+  "paye_frequency": "monthly",
+  "codes": {
+    "wages_payable": "",
+    "paye_payable": "",
+    "pensions_payable": "",
+    "er_nic_cost": "",
+    "er_pension_cost": "",
+    "dividend_code": "",
+    "attachments_payable": ""
+  },
+  "addition_codes": {},
+  "employees": {
+    "Exact Name As Printed On The Employer's Summary": {
+      "pay_code": "",
+      "dividend_code": "",
+      "dividend_tax_code": "",
+      "addition_codes": {}
+    }
+  },
+  "source": "Where these codes came from, e.g. the client's last posted wages journal in Xero (month/year), so the next person can check them.",
+  "approved_by": "",
+  "approved_on": "",
+  "notes": [
+    "mode: shadow = build + reconcile only; draft = create a DRAFT in Xero for a human to approve; post = create it POSTED.",
+    "Never guess a nominal code. Copy it from the client's own posted wages journal. Leave it empty or 'TBC-...' and the run HOLDs.",
+    "One-off corrections seen in an old journal are not standing rules - do not replicate them here."
+  ]
+}

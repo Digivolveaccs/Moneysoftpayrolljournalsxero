@@ -163,7 +163,7 @@ class XeroClientTests(unittest.TestCase):
 
     def test_validation_error_surfaces(self):
         self.seed_tokens()
-        self.transport.expect("POST", "/ManualJournals", status=400, body={
+        self.transport.expect("PUT", "/ManualJournals", status=400, body={
             "ErrorNumber": 10, "Type": "ValidationException",
             "Message": "A validation exception occurred",
             "Elements": [{"ValidationErrors": [
@@ -178,7 +178,7 @@ class XeroClientTests(unittest.TestCase):
 
     def test_create_and_post(self):
         self.seed_tokens()
-        self.transport.expect("POST", "/ManualJournals", body={
+        self.transport.expect("PUT", "/ManualJournals", body={
             "ManualJournals": [{"ManualJournalID": "MJ1", "Status": "DRAFT",
                                 "Narration": "Payroll - April 2026 (M1)"}]})
         j = self.client.create_manual_journal("t1", {"Narration": "n"})

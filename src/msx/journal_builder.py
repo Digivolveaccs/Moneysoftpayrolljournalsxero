@@ -143,7 +143,9 @@ class Journal:
         return buf.getvalue()
 
     def to_api_payload(self, *, status="DRAFT", tax_type="NONE",
-                       show_on_cash_basis=False, url=None):
+                       show_on_cash_basis=None, url=None):
+        if show_on_cash_basis is None:
+            show_on_cash_basis = bool(self.meta.get("show_on_cash_basis", False))
         """Xero Accounting API ManualJournals body (positive = debit)."""
         body = {
             "Narration": self.narration,
@@ -187,6 +189,43 @@ class Journal:
                 "summary": self.summary()}
 
 
+DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+
+
+def resolve_journal_date(cfg, month_end, *, date_override=None, pay_date=None,
+                         holds):
+    """The mapping's journal_date is a RULE: 'month_end' (default) or
+    'pay_date' (needs the period's pay date, dd/mm/yyyy or dd-Mon-yyyy).
+    A literal dd/mm/yyyy in the mapping is honoured for compatibility.
+    ``date_override`` (the --date flag) always wins."""
+    if date_override:
+        if not DATE_RE.match(date_override):
+            holds.append(f"--date '{date_override}' must be dd/mm/yyyy")
+        return date_override
+    rule = (cfg.get("journal_date") or "month_end").strip()
+    if rule == "month_end":
+        return month_end
+    if rule == "pay_date":
+        if not pay_date:
+            holds.append("mapping says journal_date=pay_date but no pay date "
+                         "is available from the report - use month_end or "
+                         "pass --date")
+            return month_end
+        for fmt in ("%d/%m/%Y", "%d-%b-%Y", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(pay_date, fmt).strftime(
+                    "%d/%m/%Y")
+            except ValueError:
+                continue
+        holds.append(f"pay date '{pay_date}' is not a recognised date")
+        return month_end
+    if DATE_RE.match(rule):
+        return rule
+    holds.append(f"journal_date '{rule}' must be month_end, pay_date or "
+                 "dd/mm/yyyy")
+    return month_end
+
+
 def _code_for(cfg, emp_cfg, key, who, label, holds):
     code = emp_cfg.get(key) or cfg.get("codes", {}).get(key)
     if not code:
@@ -227,7 +266,8 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
 
     month_name, tax_month, month_end, _ = period_parts(payroll["period"])
     tag = f"{month_name} (M{tax_month})"
-    date = date_override or cfg.get("journal_date") or month_end
+    date = resolve_journal_date(cfg, month_end, date_override=date_override,
+                                pay_date=payroll.get("pay_date"), holds=holds)
     narration = cfg.get("narration", "Payroll - {tag}").format(
         tag=tag, month=month_name, period=payroll["period"],
         client=payroll.get("client", ""))
@@ -467,6 +507,7 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
         "employees": len(emps), "tax_month": tax_month,
         "tax_year": tax_year_of(payroll["period"]),
         "outlay_convention": outlay_convention,
+        "show_on_cash_basis": bool(cfg.get("show_on_cash_basis", False)),
         "placeholders": placeholder,
     }
     return Journal(client=payroll.get("client"), period=payroll["period"],
