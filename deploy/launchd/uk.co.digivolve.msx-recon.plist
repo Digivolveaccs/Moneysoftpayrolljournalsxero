@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Daily read-only reconciliation of the last two months at 07:10:
+       duplicates, missing, mismatches, orphans, aging drafts, and active
+       clients with no journal. Writes findings to ~/.config/msx/out/recon.json;
+       exit code 2 when there is anything to look at. Install like the run job. -->
+  <key>Label</key>
+  <string>uk.co.digivolve.msx-recon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/bin/msx</string>
+    <string>recon</string>
+    <string>--last</string>
+    <string>2</string>
+    <string>--json</string>
+    <string>/Users/REPLACE_ME/.config/msx/out/recon.json</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>10</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE_ME/.config/msx/recon.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE_ME/.config/msx/recon.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

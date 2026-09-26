@@ -236,7 +236,7 @@ def cmd_recon(args):
 
     periods = args.period or [runner.current_tax_year_start()]
     if not args.period:
-        # every month from the tax-year start to today
+        # every month from the tax-year start to today (or the last N)
         import datetime as _dt
         start = _dt.datetime.strptime(periods[0], "%b-%Y")
         now = _dt.datetime.now()
@@ -244,6 +244,8 @@ def cmd_recon(args):
         while (start.year, start.month) <= (now.year, now.month):
             periods.append(start.strftime("%b-%Y"))
             start = (start.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
+        if args.last:
+            periods = periods[-args.last:]
     findings = recon.sweep(mappings, led, xero_for, periods=periods)
     led.event(kind="recon", detail={"periods": periods, "findings": len(findings)})
     led.close()
@@ -388,6 +390,8 @@ def main(argv=None):
     p.add_argument("--period", action="append", help="Mon-YYYY; repeatable; "
                    "default = every month of the current tax year")
     p.add_argument("--client", help="one mapping slug")
+    p.add_argument("--last", type=int, help="only the last N months of the "
+                   "tax year (e.g. 2 for a daily sweep)")
     p.add_argument("--json", help="also write findings to this file")
     p.set_defaults(func=cmd_recon)
 
