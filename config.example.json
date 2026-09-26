@@ -1,6 +1,8 @@
 {
   "_comment": "Copy to ~/.config/msx/config.json on the machine that posts. Never commit the real file.",
   "machine_name": "matt-mac",
+  "role": "primary",
+  "primary_heartbeat_file": "",
   "pdf_root": "~/Library/CloudStorage/Dropbox-Personal/Dropbox - Moneysoft Backups/PDF attachments",
   "clients_dir": "~/Moneysoftpayrolljournalsxero/clients",
   "state_db": "~/.config/msx/state.sqlite",
@@ -28,6 +30,11 @@
     "report_to": "matthew@digivolve.co.uk",
     "report_always": false,
     "heartbeat_file": "~/.config/msx/heartbeat.json",
-    "heartbeat_url": ""
+    "heartbeat_url": "",
+    "graph": {
+      "_comment": "Optional channel of last resort when Missive fails: an Entra app with Application Mail.Send (the practice's existing mailer app).",
+      "tenant_id": "", "client_id": "", "secret_file": "~/.config/msx/graph_secret",
+      "from_address": "payroll@digivolve.co.uk"
+    }
   }
 }

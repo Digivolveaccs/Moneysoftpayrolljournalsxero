@@ -308,10 +308,52 @@ def standby_guard(cfg, mode_override, take_over, summary, clock):
     return "shadow"
 
 
+class RunLock:
+    """Exclusive lock next to the ledger so two launchd firings (or a human
+    and launchd) can never post concurrently on one machine."""
+
+    def __init__(self, path):
+        self.path = path
+        self.fh = None
+
+    def __enter__(self):
+        import fcntl
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        self.fh = open(self.path, "a+")
+        try:
+            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.fh.close()
+            self.fh = None
+            raise Hold("another msx run is in progress on this machine "
+                       f"(lock {self.path}) - try again later", stage="lock")
+        self.fh.seek(0)
+        self.fh.truncate()
+        self.fh.write(f"{os.getpid()} {datetime.datetime.now().isoformat()}\n")
+        self.fh.flush()
+        return self
+
+    def __exit__(self, *exc):
+        import fcntl
+        if self.fh:
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+
+
 def run_once(cfg, *, xero_factory, log=print, mode_override=None,
              dry_run=False, only_clients=None, only_periods=None,
              min_period=None, notify_enabled=True, clock=None,
              take_over=False):
+    with RunLock(cfg.state_db + ".lock"):
+        return _run_once(cfg, xero_factory=xero_factory, log=log,
+                         mode_override=mode_override, dry_run=dry_run,
+                         only_clients=only_clients, only_periods=only_periods,
+                         min_period=min_period, notify_enabled=notify_enabled,
+                         clock=clock, take_over=take_over)
+
+
+def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
+              only_periods, min_period, notify_enabled, clock, take_over):
     ledger = state.Ledger(cfg.state_db, machine=cfg.machine_name)
     run_id = new_run_id(clock)
     ledger.start_run(run_id)
@@ -387,6 +429,14 @@ def run_once(cfg, *, xero_factory, log=print, mode_override=None,
                                              html)
             summary["notify"] = res
             if not res.get("ok"):
-                log(f"report not emailed: {res}")
+                log(f"report not emailed via Missive: {res}")
+                graph = cfg.notify.get("graph")
+                if graph and cfg.notify.get("report_to"):
+                    res2 = notify.send_graph_mail(graph,
+                                                  notify.report_subject(summary),
+                                                  html, cfg.notify["report_to"])
+                    summary["notify_fallback"] = res2
+                    if not res2.get("ok"):
+                        log(f"report not emailed via Graph either: {res2}")
         summary["heartbeat"] = notify.heartbeat(cfg.notify, summary)
     return summary

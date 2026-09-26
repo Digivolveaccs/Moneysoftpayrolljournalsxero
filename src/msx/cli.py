@@ -176,9 +176,13 @@ def cmd_auth(args):
         for t in xero.tenants():
             print(f"  {t['tenant_id']}  {t['name']}")
     elif args.action == "check":
+        st = xero.token_status()
         try:
             ts = xero.tenants()
-            print(f"ok - token valid, {len(ts)} organisation(s) connected")
+            st = xero.token_status()
+            print(f"ok - token valid, {len(ts)} organisation(s) connected; "
+                  f"refresh token expires in {st.get('refresh_expires_in_days')} "
+                  "days if unused")
         except xero_client.AuthRequired as exc:
             print("AUTH REQUIRED:", exc)
             return 3
@@ -272,6 +276,22 @@ def cmd_chart(args):
     return 0
 
 
+def cmd_sync_dropbox(args):
+    """Cloud fallback: mirror new report files from a Dropbox app folder
+    into the local pdf_root, then (optionally) run."""
+    from . import dropbox_sync
+    cfg = config_mod.load(args.config)
+    dcfg = cfg.data.get("dropbox")
+    if not dcfg:
+        print("config has no 'dropbox' block (see msx/dropbox_sync.py)")
+        return 3
+    r = dropbox_sync.sync(dcfg, cfg.pdf_root, log=print)
+    print(f"downloaded {r['downloaded']}, removed {r['deleted']}, cursor stored")
+    if args.then_run:
+        return cmd_run(args)
+    return 0
+
+
 def cmd_doctor(args):
     problems = []
     try:
@@ -280,6 +300,10 @@ def cmd_doctor(args):
     except Hold as exc:
         print("CONFIG:", exc)
         return 3
+    role = (cfg.data.get("role") or "primary").lower()
+    print(f"role: {role}" + ("" if "role" in cfg.data else
+                             " (default - set \"role\" explicitly on every "
+                             "machine: primary on ONE, standby on the rest)"))
     for label, p in (("pdf_root", cfg.pdf_root), ("clients_dir", cfg.clients_dir)):
         print(f"{label}: {p} -> {'ok' if os.path.isdir(p) else 'MISSING'}")
         if not os.path.isdir(p):
@@ -305,7 +329,13 @@ def cmd_doctor(args):
         try:
             xero = make_xero_factory(cfg)(app_name)
             ts = xero.tenants()
-            print(f"xero app {app_name}: token ok, {len(ts)} org(s) connected")
+            st = xero.token_status()
+            days = st.get("refresh_expires_in_days")
+            flag = " - WARNING: re-authorise soon" if days is not None and days < 7 else ""
+            print(f"xero app {app_name}: token ok, {len(ts)} org(s) connected, "
+                  f"refresh token good for {days} days unused{flag}")
+            if flag:
+                problems.append("xero-token-expiring")
         except Hold as exc:
             print(f"xero app {app_name}: {exc}")
         except xero_client.AuthRequired as exc:
@@ -398,6 +428,18 @@ def main(argv=None):
     p = sub.add_parser("chart", help="print a client org's chart of accounts")
     p.add_argument("slug")
     p.set_defaults(func=cmd_chart)
+
+    p = sub.add_parser("sync-dropbox", help="cloud fallback: mirror the "
+                       "Dropbox app folder into pdf_root via the API")
+    p.add_argument("--then-run", action="store_true")
+    p.add_argument("--mode", choices=("shadow", "draft", "post"))
+    p.add_argument("--client-name", action="append")
+    p.add_argument("--period")
+    p.add_argument("--since")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-notify", action="store_true")
+    p.add_argument("--take-over", action="store_true")
+    p.set_defaults(func=cmd_sync_dropbox)
 
     p = sub.add_parser("doctor")
     p.set_defaults(func=cmd_doctor)

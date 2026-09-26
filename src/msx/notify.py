@@ -14,6 +14,7 @@ import html
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 MISSIVE_BASE = "https://public.missiveapp.com/v1"
@@ -157,11 +158,51 @@ def heartbeat(notify_cfg, summary, *, opener=None):
         out["file"] = p
     url = notify_cfg.get("heartbeat_url")
     if url:
+        body = None
         if summary["held"] or summary.get("failed"):
             url = url.rstrip("/") + "/fail"       # healthchecks.io convention
+            body = "\n".join(f"{h['client']} {h['period']}: "
+                             f"{(h.get('note') or '').splitlines()[0][:200]}"
+                             for h in summary["held"])[:10000].encode("utf-8")
         try:
-            with (opener or urllib.request.urlopen)(url, timeout=15) as resp:
+            req = urllib.request.Request(url, data=body, method="POST" if body
+                                         else "GET")
+            with (opener or urllib.request.urlopen)(req, timeout=15) as resp:
                 out["url_status"] = resp.status
         except Exception as exc:
             out["url_error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+def send_graph_mail(graph_cfg, subject, body_html, to, *, transport=None):
+    """Channel of last resort: Microsoft Graph sendMail with an Entra app
+    (client credentials, Application Mail.Send). Config keys: tenant_id,
+    client_id, secret_file, from_address. Never raises."""
+    try:
+        with open(os.path.expanduser(graph_cfg["secret_file"]),
+                  encoding="utf-8") as fh:
+            secret = fh.read().strip()
+        opener = transport or urllib.request.urlopen
+        tok_req = urllib.request.Request(
+            f"https://login.microsoftonline.com/{graph_cfg['tenant_id']}"
+            "/oauth2/v2.0/token",
+            data=urllib.parse.urlencode({
+                "client_id": graph_cfg["client_id"],
+                "client_secret": secret, "grant_type": "client_credentials",
+                "scope": "https://graph.microsoft.com/.default"}).encode(),
+            method="POST")
+        with opener(tok_req, timeout=30) as resp:
+            token = json.loads(resp.read().decode())["access_token"]
+        msg = {"message": {"subject": subject,
+                           "body": {"contentType": "HTML", "content": body_html},
+                           "toRecipients": [{"emailAddress": {"address": to}}]},
+               "saveToSentItems": True}
+        req = urllib.request.Request(
+            f"https://graph.microsoft.com/v1.0/users/{graph_cfg['from_address']}"
+            "/sendMail", data=json.dumps(msg).encode(), method="POST",
+            headers={"Authorization": "Bearer " + token,
+                     "Content-Type": "application/json"})
+        with opener(req, timeout=30) as resp:
+            return {"ok": resp.status in (200, 202), "status": resp.status}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

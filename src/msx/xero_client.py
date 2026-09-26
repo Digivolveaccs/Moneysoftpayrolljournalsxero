@@ -302,6 +302,18 @@ class XeroClient:
         self.token_store.save(new)
         self._tokens = new
 
+    def token_status(self):
+        """{'has_token', 'obtained_at', 'refresh_expires_in_days'} - the
+        rotating refresh token dies 60 days after it was last used."""
+        tokens = self._tokens or self.token_store.load()
+        if not tokens:
+            return {"has_token": False}
+        obtained = tokens.get("obtained_at", 0)
+        days_left = (obtained + 60 * 86400 - self._clock()) / 86400
+        return {"has_token": True, "obtained_at": obtained,
+                "refresh_expires_in_days": round(days_left, 1),
+                "custom_connection": bool(self.client_secret)}
+
     def force_refresh(self):
         with self._lock:
             if self._tokens is None:

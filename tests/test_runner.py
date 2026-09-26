@@ -190,6 +190,12 @@ class RunnerTests(unittest.TestCase):
         s2 = self.run_once(take_over=True)
         self.assertEqual(len(s2["posted"]), 2)
 
+    def test_run_lock_refuses_second_run(self):
+        from msx.errors import Hold
+        with runner.RunLock(self.cfg.state_db + ".lock"):
+            with self.assertRaises(Hold):
+                self.run_once()
+
     def test_pending_when_file_not_settled(self):
         self.cfg.data["settle_seconds"] = 10 ** 9
         s = self.run_once()

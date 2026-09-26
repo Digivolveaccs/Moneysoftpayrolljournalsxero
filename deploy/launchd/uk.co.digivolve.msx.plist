@@ -9,7 +9,9 @@
        Logs:     ~/.config/msx/launchd.log
        A run is idempotent, so a 30-minute cadence costs nothing when there is
        nothing new; it also refreshes the Xero token well inside the 60-day
-       refresh-token life and writes the heartbeat. -->
+       refresh-token life and writes the heartbeat. Best hosted on an
+       always-on Mac (a Mac mini as "the payroll machine"): set Energy Saver
+       to never sleep and "Start up automatically after a power failure". -->
   <key>Label</key>
   <string>uk.co.digivolve.msx</string>
   <key>ProgramArguments</key>
@@ -18,8 +20,14 @@
     <string>__REPO__/bin/msx</string>
     <string>run</string>
   </array>
-  <key>StartInterval</key>
-  <integer>1800</integer>
+  <!-- Calendar triggers (not StartInterval): Apple documents that a
+       StartCalendarInterval job missed during sleep runs at wake, whereas
+       StartInterval firings during sleep are simply dropped. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Minute</key><integer>35</integer></dict>
+  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
