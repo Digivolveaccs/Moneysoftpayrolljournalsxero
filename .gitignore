@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+tokens.json
+config.local.json
+/out/
+/inbox/
+.DS_Store

@@ -1,0 +1,33 @@
+{
+  "client": "Browns Garage (Haywards Heath) Ltd",
+  "source": "Codes taken from BrightPay journal #109278 (Mar-2026, posted 13 Aug 2026), except where marked TBC.",
+  "narration": "Payroll - {tag}",
+  "tax_rate": "No VAT",
+  "codes": {
+    "wages_payable": "2200",
+    "paye_payable": "2210",
+    "pensions_payable": "2211",
+    "er_nic_cost": "6002",
+    "er_pension_cost": "6001",
+    "dividend_code": "471"
+  },
+  "employees": {
+    "Chris Jones": {"pay_code": "230"},
+    "Sally Jones": {"pay_code": "381"},
+    "Trevor Donohue": {"pay_code": "6000"},
+    "Robert Jones": {"pay_code": "230", "dividend_tax_code": "836"},
+    "Darren Jones": {"pay_code": "230", "dividend_tax_code": "837"},
+    "Emma Jones": {"pay_code": "381", "dividend_tax_code": "2023"},
+    "Ylva Alexandersson": {"pay_code": "381", "dividend_tax_code": "2022"},
+    "Simon Thompson": {"pay_code": "6000"},
+    "Graeme Williamson": {"pay_code": "6000"},
+    "Freddie Howarth": {"pay_code": "6000"},
+    "Susannah Jones": {"pay_code": "381"}
+  },
+  "notes": [
+    "230 Directors Remuneration / 381 Salaries / 6000 Productive Labour / 471 Dividends / 2200 Wages payable / 2210 PAYE Payable / 2211 Pensions Payable / 6002 PAYE tax & NI (employer NIC) / 6001 Pensions (employer pension cost).",
+    "Employer pension was posted to 6002 by BrightPay alongside the NIC; Matt confirmed 13 Aug 2026 it belongs on 6001 instead.",
+    "Dividend tax deducted from net pay goes to each person's loan account, confirmed by Matt 13 Aug 2026: Rob 836, Darren 837, Emma 2023, Ylva 2022.",
+    "Mar-2026 also carried a one-off Dr 2200 / Cr 836 of 0.33 to square a 33p dividend difference on Robert. Not a standing rule - do not replicate."
+  ]
+}
