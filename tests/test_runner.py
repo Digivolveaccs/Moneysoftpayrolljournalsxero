@@ -157,6 +157,29 @@ class RunnerTests(unittest.TestCase):
         s2 = self.run_once(only_periods=["Apr-2026"], min_period="Apr-2026")
         self.assertEqual([e["period"] for e in s2["shadow"]], ["Apr-2026"])
 
+    def test_circuit_breaker_defers_when_xero_is_down(self):
+        from msx.xero_client import XeroError
+        self.set_mode("post")
+        self.xero.fail_create = XeroError("503", status=503, retryable=True)
+        # add a third client-period so the breaker (3 failures) trips
+        folder = os.path.join(self.pdf_root,
+                              "Browns Garage (Haywards Heath) Limited 2026-27")
+        p = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                         " - Employer's Summary for May-2026.txt")
+        with open(os.path.join(FIX, "browns_apr2026_tabbed.txt")) as fh:
+            text = fh.read().replace("Apr-2026", "May-2026").replace("May-2026\t60.73", "Jun-2026\t60.73")
+        with open(p, "w") as fh:
+            fh.write(text)
+        os.utime(p, (1_600_000_000, 1_600_000_000))
+        s = self.run_once()
+        self.assertEqual(len(s["pending"]), 3)
+        self.assertEqual(s["held"], [])
+        self.assertTrue(any("deferred" in w for w in s["warnings"]))
+        # Xero back: everything posts on the next run, keys reused
+        self.xero.fail_create = None
+        s2 = self.run_once()
+        self.assertEqual(len(s2["posted"]), 3)
+
     def test_pending_when_file_not_settled(self):
         self.cfg.data["settle_seconds"] = 10 ** 9
         s = self.run_once()

@@ -23,6 +23,7 @@ import traceback
 from . import journal_builder, mapping as mapping_mod, notify, p30 as p30_mod
 from . import poster, sources, state, summary_parser
 from .errors import Hold, Skip
+from .xero_client import AuthRequired, XeroError
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -62,6 +63,8 @@ class RunContext:
         self.dry_run = dry_run
         self.clock = clock or datetime.datetime.now
         self._xero = {}
+        self.xero_failures = 0
+        self.xero_down = False
 
     def xero_for(self, mapping):
         app = (mapping.cfg.get("xero") or {}).get("app") or "default"
@@ -167,10 +170,16 @@ def process_group(ctx, client, period, files, summary):
                     p30=p30_status)
         ctx.ledger.upsert(slug, period, ea=f"{journal.meta['ea']:.2f}",
                           er_nic=f"{journal.meta['er_nic']:.2f}")
+        if mode != "shadow" and ctx.xero_down:
+            summary["pending"].append(_entry(client, period,
+                                             note="Xero unreachable earlier in "
+                                             "this run - deferred"))
+            return
         xero = ctx.xero_for(m) if mode != "shadow" else None
         try:
             res = poster.post_journal(journal, m, ctx.ledger, xero, mode=mode,
                                       dry_run=ctx.dry_run)
+            ctx.xero_failures = 0
         except Skip as exc:
             if row and row.get("status") in ("posted", "draft") \
                     and exc.reason == "ledger":
@@ -195,6 +204,16 @@ def process_group(ctx, client, period, files, summary):
         log(f"{client} {period}: skipped - {exc}")
     except Hold as exc:
         note = str(exc)
+        if exc.stage == "post-retry":
+            ctx.xero_failures += 1
+            if ctx.xero_failures >= 3:
+                ctx.xero_down = True
+                summary["warnings"].append("Xero unreachable three times in a "
+                                           "row - remaining posts deferred to "
+                                           "the next run")
+            summary["pending"].append(_entry(client, period, note=note))
+            log(f"{client} {period}: deferred - {note.splitlines()[0]}")
+            return
         if slug:
             prev = ctx.ledger.get(slug, period)
             if prev and prev.get("status") in ("posted", "draft") \
@@ -205,6 +224,17 @@ def process_group(ctx, client, period, files, summary):
         summary["held"].append(_entry(client, period, stage=exc.stage,
                                       note=note))
         log(f"{client} {period}: HELD ({exc.stage}) - {note.splitlines()[0]}")
+    except (XeroError, AuthRequired) as exc:
+        # transport / auth trouble outside the poster's own handling
+        ctx.xero_failures += 1
+        if ctx.xero_failures >= 3:
+            ctx.xero_down = True
+        note = f"Xero error: {exc}"
+        if isinstance(exc, AuthRequired):
+            summary["warnings"].append(f"XERO AUTH REQUIRED: {exc}")
+            ctx.xero_down = True
+        summary["pending"].append(_entry(client, period, note=note))
+        log(f"{client} {period}: deferred - {note}")
     except Exception as exc:  # a bug, never silent
         note = f"unexpected error {type(exc).__name__}: {exc}\n" \
                + traceback.format_exc(limit=3)
@@ -248,6 +278,8 @@ def run_once(cfg, *, xero_factory, log=print, mode_override=None,
     ledger = state.Ledger(cfg.state_db, machine=cfg.machine_name)
     run_id = new_run_id(clock)
     ledger.start_run(run_id)
+    if notify_enabled:
+        notify.heartbeat_start(cfg.notify)
     summary = {"run_id": run_id, "machine": ledger.machine,
                "mode": mode_override or "per-client", "posted": [],
                "draft": [], "shadow": [], "skipped": [], "held": [],

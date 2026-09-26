@@ -31,6 +31,7 @@ class FakeXero:
         self.full = {}
         self.created = []
         self.fail_create = None
+        self.tamper = None
         self.status_changes = []
 
     def tenants(self):
@@ -54,10 +55,17 @@ class FakeXero:
             raise self.fail_create
         jid = f"MJ{len(self.created) + 1}"
         self.created.append((tid, payload, idempotency_key))
+        self.full[jid] = {"ManualJournalID": jid, "Status": payload["Status"],
+                          "Date": payload.get("Date"),
+                          "JournalLines": [dict(l) for l in payload["JournalLines"]]}
+        if self.tamper:
+            self.tamper(self.full[jid])
         return {"ManualJournalID": jid, "Status": payload["Status"]}
 
     def set_manual_journal_status(self, tid, jid, status):
         self.status_changes.append((tid, jid, status))
+        if jid in self.full:
+            self.full[jid]["Status"] = status
         return {"ManualJournalID": jid, "Status": status}
 
 
@@ -209,6 +217,52 @@ class PosterTests(unittest.TestCase):
         self.map.cfg["xero"] = {"tenant_id": "T2"}
         self.assertEqual(poster.resolve_tenant(self.map, self.xero.tenants())["name"],
                          "Other Ltd")
+
+    def test_post_write_mismatch_holds(self):
+        self.xero.tamper = lambda full: full["JournalLines"].pop()
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "verify")
+        row = self.ledger.get("browns", "Apr-2026")
+        self.assertEqual(row["xero_journal_id"], "MJ1")
+        self.assertIn("POST-WRITE MISMATCH", row["note"])
+
+    def test_wrong_account_class_or_name_holds(self):
+        self.xero.chart["2200"]["class"] = "EXPENSE"
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertIn("payable", str(cm.exception))
+        self.xero.chart["2200"]["class"] = "LIABILITY"
+        self.xero.chart["2200"]["name"] = "PAYE Payable"        # the Brandtek trap
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertIn("means something else", str(cm.exception))
+        self.xero.chart["2200"]["name"] = "Wages Payable"
+        self.map.cfg["xero"]["expect_names"] = {"2210": "PAYE Control"}
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertIn("chart changed", str(cm.exception))
+
+    def test_retryable_error_keeps_intent_and_reuses_key(self):
+        self.xero.fail_create = XeroError("503", status=503, retryable=True)
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "post-retry")
+        row = self.ledger.get("browns", "Apr-2026")
+        self.assertEqual(row["status"], "posting")
+        key = row["idempotency_key"]
+        self.xero.fail_create = None
+        r = poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(r.outcome, "draft")
+        self.assertEqual(self.xero.created[0][2], key)
+
+    def test_client_posts_own_journal(self):
+        self.map.cfg["xero"]["client_posts_own_journal"] = True
+        with self.assertRaises(Skip) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.reason, "client-posts-own")
+        self.assertEqual(self.xero.created, [])
+        self.assertEqual(self.ledger.get("browns", "Apr-2026")["status"], "skipped")
 
     def test_dry_run(self):
         r = poster.post_journal(self.journal, self.map, self.ledger, self.xero,

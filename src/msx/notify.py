@@ -128,6 +128,20 @@ def send_missive_report(notify_cfg, subject, body_html, *, transport=None):
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def heartbeat_start(notify_cfg, *, opener=None):
+    """Ping <heartbeat_url>/start so a hung run is distinguishable from one
+    that never began (healthchecks.io convention). Never raises."""
+    url = notify_cfg.get("heartbeat_url")
+    if not url:
+        return None
+    try:
+        with (opener or urllib.request.urlopen)(url.rstrip("/") + "/start",
+                                                timeout=15) as resp:
+            return resp.status
+    except Exception:
+        return None
+
+
 def heartbeat(notify_cfg, summary, *, opener=None):
     out = {}
     path = notify_cfg.get("heartbeat_file")

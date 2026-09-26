@@ -108,27 +108,90 @@ def check_lock_dates(org, journal):
                    stage="lock")
 
 
-def check_accounts(accounts, journal, org_name):
+# what each line kind must NOT land on: a payable that is really an expense
+# account, or a cost that is really income, is a wrong mapping even though
+# Xero would accept the journal (814 = PAYE Payable at Brandtek is the
+# canonical example - see docs/research/06 M4)
+LIABILITY_KINDS = {"net", "paye", "pension_payable", "attachments", "ea_paye",
+                   "stat_rec_paye", "ser_paye", "dividend_tax", "overpayment",
+                   "payroll_giving", "childcare", "loans_repayment"}
+COST_KINDS = {"gross", "dividend", "er_nic", "er_pension", "ea_er_nic",
+              "stat_rec_cost", "levy_cost"}
+NAME_CONFLICTS = {"net": ("paye", "nic", "hmrc"),
+                  "paye": ("wages payable", "net wages", "pension"),
+                  "pension_payable": ("paye", "wages")}
+
+
+def check_accounts(accounts, journal, org_name, expect_names=None):
     problems = []
-    for code in sorted({l.account_code for l in journal.lines}):
+    expect_names = expect_names or {}
+    by_code = {}
+    for l in journal.lines:
+        by_code.setdefault(l.account_code, set()).add(l.kind)
+    for code in sorted(by_code):
         a = accounts.get(code)
         if not a:
             problems.append(f"code {code} does not exist in {org_name}")
             continue
+        name = a.get("name") or ""
         if (a.get("status") or "ACTIVE") != "ACTIVE":
-            problems.append(f"code {code} ({a.get('name')}) is "
-                            f"{a.get('status')}")
+            problems.append(f"code {code} ({name}) is {a.get('status')}")
         sys_acc = (a.get("system_account") or "").upper()
         if sys_acc in SYSTEM_ACCOUNTS_BLOCKED:
-            problems.append(f"code {code} ({a.get('name')}) is the system "
-                            f"account {sys_acc} - Xero rejects manual "
-                            "journals to it")
+            problems.append(f"code {code} ({name}) is the system account "
+                            f"{sys_acc} - Xero rejects manual journals to it")
+        cls = (a.get("class") or "").upper()
+        kinds = by_code[code]
+        if kinds & LIABILITY_KINDS and cls in ("EXPENSE", "REVENUE"):
+            problems.append(f"code {code} ({name}) is a {cls} account but the "
+                            f"mapping uses it as a payable ({', '.join(sorted(kinds))})")
+        if kinds & COST_KINDS and cls == "REVENUE":
+            problems.append(f"code {code} ({name}) is a REVENUE account but "
+                            f"the mapping uses it as a cost ({', '.join(sorted(kinds))})")
+        low = name.lower()
+        for kind, bad_words in NAME_CONFLICTS.items():
+            if kind in kinds and any(w in low for w in bad_words):
+                problems.append(f"code {code} is named '{name}' but the "
+                                f"mapping uses it for {kind} - the same code "
+                                "means something else in this org")
+        want = expect_names.get(code)
+        if want and want.strip().lower() != low.strip():
+            problems.append(f"code {code} is now named '{name}' but the "
+                            f"mapping expects '{want}' - the chart changed; "
+                            "re-confirm the mapping")
     if problems:
         raise Hold("chart of accounts check failed: " + "; ".join(problems)
                    + " - fix the client mapping or the Xero chart",
                    stage="accounts")
-    return {code: accounts[code].get("name") for code in
-            sorted({l.account_code for l in journal.lines})}
+    return {code: accounts[code].get("name") for code in sorted(by_code)}
+
+
+def verify_written(xero, tenant_id, journal_id, journal, expected_status):
+    """Read the journal back and prove it is what we sent. A mismatch is a
+    human-level HOLD (never auto-void)."""
+    full = xero.manual_journal(tenant_id, journal_id) or {}
+    lines = full.get("JournalLines", []) or []
+    got_debits = round(sum(float(l.get("LineAmount", 0)) for l in lines
+                           if float(l.get("LineAmount", 0)) > 0), 2)
+    problems = []
+    if abs(got_debits - float(journal.total_debits)) > 0.005:
+        problems.append(f"debits {got_debits:.2f} != {journal.total_debits}")
+    if len(lines) != len(journal.lines):
+        problems.append(f"{len(lines)} lines != {len(journal.lines)} sent")
+    if (full.get("Status") or expected_status) != expected_status:
+        problems.append(f"status {full.get('Status')} != {expected_status}")
+    got_date = _date_of(full.get("Date"))
+    if got_date and got_date != journal.iso_date():
+        problems.append(f"date {got_date} != {journal.iso_date()}")
+    warnings = [w.get("Message", "") for w in full.get("Warnings", []) or []]
+    if warnings:
+        problems.append("Xero warnings: " + "; ".join(warnings))
+    return problems
+
+
+def _date_of(value):
+    from .xero_client import _xero_date
+    return _xero_date(value)
 
 
 def month_window(period):
@@ -199,6 +262,13 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
                       **base)
         return PostResult("shadow", message="shadow mode: journal built and "
                           "reconciled, nothing sent to Xero", checks=checks)
+    if (mapping.cfg.get("xero") or {}).get("client_posts_own_journal"):
+        ledger.upsert(slug, period, status="skipped",
+                      note="client posts their own wages journal - recon only",
+                      **base)
+        raise Skip(f"{mapping.client}: client posts their own wages journal "
+                   "(xero.client_posts_own_journal) - built for the record, "
+                   "not sent", reason="client-posts-own")
 
     tenant = resolve_tenant(mapping, xero.tenants())
     tid = tenant["tenant_id"]
@@ -207,8 +277,9 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
     check_lock_dates(org, journal)
     checks["lock_dates"] = {"period": org.get("period_lock_date"),
                             "year_end": org.get("end_of_year_lock_date")}
-    checks["accounts"] = check_accounts(xero.accounts(tid), journal,
-                                        org.get("name"))
+    checks["accounts"] = check_accounts(
+        xero.accounts(tid), journal, org.get("name"),
+        expect_names=(mapping.cfg.get("xero") or {}).get("expect_names"))
     action, existing = duplicate_guard(xero, tid, journal, row)
     if action == "adopt":
         status = "posted" if existing["status"] == "POSTED" else "draft"
@@ -225,12 +296,25 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
                           f"'{journal.narration}' to {tenant['name']}",
                           tenant_id=tid, checks=checks)
 
-    idem = hashlib.sha256(f"{tid}|{journal.narration}|{journal.iso_date()}|"
-                          f"{payload_sha}".encode()).hexdigest()
-    ledger.mark_intent(slug, period, xero_tenant_id=tid, **base)
+    # reuse the key of an interrupted attempt so a retry is byte-identical
+    idem = None
+    if row and row.get("status") == "posting" and row.get("idempotency_key") \
+            and row.get("payload_sha") == payload_sha:
+        idem = row["idempotency_key"]
+    idem = idem or hashlib.sha256(
+        f"{tid}|{journal.narration}|{journal.iso_date()}|{payload_sha}"
+        .encode()).hexdigest()
+    ledger.mark_intent(slug, period, xero_tenant_id=tid, idempotency_key=idem,
+                       **base)
     try:
         created = xero.create_manual_journal(tid, payload, idempotency_key=idem)
     except XeroError as exc:
+        if exc.retryable:
+            # the request may or may not have reached Xero: leave the row in
+            # 'posting' so the next run adopts or re-sends with the same key
+            raise Hold(f"{mapping.client} {period}: Xero unavailable ({exc}) - "
+                       "will retry next run", stage="post-retry",
+                       details={"xero": exc.body})
         ledger.mark_failed(slug, period, f"Xero refused: {exc}",
                            xero_tenant_id=tid, **base)
         raise Hold(f"{mapping.client} {period}: {exc}", stage="post",
@@ -240,6 +324,15 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
     status = "posted" if xstatus == "POSTED" else "draft"
     ledger.mark_posted(slug, period, xero_journal_id=jid, status=status,
                        xero_tenant_id=tid, note="", **base)
+    problems = verify_written(xero, tid, jid, journal, payload["Status"])
+    if problems:
+        ledger.upsert(slug, period, note="POST-WRITE MISMATCH: "
+                      + "; ".join(problems))
+        raise Hold(f"{mapping.client} {period}: journal {jid} was created in "
+                   f"{tenant['name']} but reads back differently: "
+                   + "; ".join(problems) + " - a human must inspect it in "
+                   "Xero (do not re-run until resolved)", stage="verify",
+                   details={"xero_journal_id": jid})
     return PostResult(status, message=f"{xstatus} journal {jid} created in "
                       f"{tenant['name']}: '{journal.narration}' "
                       f"Dr=Cr={journal.total_debits}",
