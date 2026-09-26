@@ -42,8 +42,9 @@ class FakeXero:
     def accounts(self, tid):
         return self.chart
 
-    def find_manual_journals(self, tid, start, end):
-        return [e for e in self.existing if start <= e["date"] <= end]
+    def find_manual_journals(self, tid, start, end, include_deleted=False):
+        return [e for e in self.existing if start <= e["date"] <= end
+                and (include_deleted or e["status"] not in ("DELETED", "VOIDED"))]
 
     def manual_journal(self, tid, jid):
         return self.full.get(jid)

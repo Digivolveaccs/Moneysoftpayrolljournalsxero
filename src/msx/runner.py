@@ -187,6 +187,34 @@ def process_group(ctx, client, period, files, summary):
         log(f"{client} {period}: ERROR - {exc}")
 
 
+def keepalive(cfg, ledger, xero_factory, summary, log, every_days=7):
+    """Touch each Xero app's token at least weekly so the rotating refresh
+    token never reaches Xero's 60-day unused expiry. A failure here is a
+    warning, never a stop, and never disables anything."""
+    apps = sorted(set(["default"] + list((cfg.xero.get("apps") or {}).keys())))
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=every_days)).isoformat()
+    for app in apps:
+        if app.startswith("_"):
+            continue
+        try:
+            cfg.xero_app(app)
+        except Hold:
+            continue                        # app not configured
+        last = ledger.db.execute(
+            "SELECT at FROM events WHERE kind='xero_keepalive' AND detail=? "
+            "ORDER BY id DESC LIMIT 1", (app,)).fetchone()
+        if last and last["at"] > cutoff:
+            continue
+        try:
+            n = len(xero_factory(app).tenants())
+            ledger.event(kind="xero_keepalive", detail=app)
+            log(f"xero app {app}: token refreshed, {n} org(s) connected")
+        except Exception as exc:
+            summary["warnings"].append(f"xero app {app}: keep-alive failed - "
+                                       f"{type(exc).__name__}: {exc}")
+
+
 def run_once(cfg, *, xero_factory, log=print, mode_override=None,
              dry_run=False, only_clients=None, only_periods=None,
              min_period=None, notify_enabled=True, clock=None):
@@ -224,6 +252,7 @@ def run_once(cfg, *, xero_factory, log=print, mode_override=None,
                 summary["ignored_old"] += 1
                 continue
             process_group(ctx, client, period, files, summary)
+        keepalive(cfg, ledger, xero_factory, summary, log)
         for stale in ledger.stale_intents(older_than_minutes=30):
             summary["warnings"].append(
                 f"{stale['slug']} {stale['period']}: a previous run died "

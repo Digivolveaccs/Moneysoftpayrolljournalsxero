@@ -8,6 +8,7 @@
     python3 -m msx.cli ledger clear SLUG Mon-YYYY
     python3 -m msx.cli auth login|tenants|check [--app NAME]
     python3 -m msx.cli onboard REPORT... [--org NAME]   # propose a mapping
+    python3 -m msx.cli recon [--period Mon-YYYY]        # ledger vs Xero
     python3 -m msx.cli chart SLUG            # dump the org's chart of accounts
     python3 -m msx.cli doctor                # config, folders, mappings, tools
 
@@ -216,6 +217,42 @@ def cmd_onboard(args):
     return 0
 
 
+def cmd_recon(args):
+    from . import recon
+    cfg = config_mod.load(args.config)
+    mappings = mapping_mod.load_all(cfg.clients_dir)
+    if args.client:
+        mappings = {k: v for k, v in mappings.items() if k == args.client}
+    led = state.Ledger(cfg.state_db, machine=cfg.machine_name)
+    factory = make_xero_factory(cfg)
+    cache = {}
+
+    def xero_for(m):
+        app = (m.cfg.get("xero") or {}).get("app") or "default"
+        if app not in cache:
+            cache[app] = factory(app)
+        return cache[app]
+
+    periods = args.period or [runner.current_tax_year_start()]
+    if not args.period:
+        # every month from the tax-year start to today
+        import datetime as _dt
+        start = _dt.datetime.strptime(periods[0], "%b-%Y")
+        now = _dt.datetime.now()
+        periods = []
+        while (start.year, start.month) <= (now.year, now.month):
+            periods.append(start.strftime("%b-%Y"))
+            start = (start.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
+    findings = recon.sweep(mappings, led, xero_for, periods=periods)
+    led.event(kind="recon", detail={"periods": periods, "findings": len(findings)})
+    led.close()
+    print(recon.render(findings))
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(findings, fh, indent=1)
+    return 2 if findings else 0
+
+
 def cmd_chart(args):
     cfg = config_mod.load(args.config)
     mappings = mapping_mod.load_all(cfg.clients_dir)
@@ -341,6 +378,14 @@ def main(argv=None):
     p.add_argument("--months", type=int, default=6)
     p.add_argument("--overwrite", action="store_true")
     p.set_defaults(func=cmd_onboard)
+
+    p = sub.add_parser("recon", help="read-only sweep: ledger vs Xero "
+                       "(duplicates, missing, mismatches, orphans, aging drafts)")
+    p.add_argument("--period", action="append", help="Mon-YYYY; repeatable; "
+                   "default = every month of the current tax year")
+    p.add_argument("--client", help="one mapping slug")
+    p.add_argument("--json", help="also write findings to this file")
+    p.set_defaults(func=cmd_recon)
 
     p = sub.add_parser("chart", help="print a client org's chart of accounts")
     p.add_argument("slug")
