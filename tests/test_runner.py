@@ -166,3 +166,42 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class YearToDateEaTests(unittest.TestCase):
+    def test_cumulative_ea_over_annual_max_holds(self):
+        import shutil as _sh
+        from msx import state as _state
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            root = tmp.name
+            pdf_root = os.path.join(root, "PDF attachments")
+            folder = os.path.join(pdf_root, "Browns Garage (Haywards Heath) Limited 2026-27")
+            os.makedirs(folder)
+            p = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                             " - Employer's Summary for Aug-2026.txt")
+            with open(os.path.join(FIX, "browns_apr2026_tabbed.txt")) as fh:
+                text = fh.read().replace("Apr-2026", "Aug-2026").replace("May-2026", "Sep-2026")
+            with open(p, "w") as fh:
+                fh.write(text)
+            os.utime(p, (1_600_000_000, 1_600_000_000))
+            clients = os.path.join(root, "clients")
+            os.makedirs(clients)
+            _sh.copy(os.path.join(os.path.dirname(HERE), "clients",
+                                  "browns-garage-haywards-heath.json"), clients)
+            cfg = config_mod.Config({
+                "pdf_root": pdf_root, "clients_dir": clients,
+                "state_db": os.path.join(root, "state.sqlite"),
+                "out_dir": os.path.join(root, "out"), "settle_seconds": 0,
+                "stability_sample_seconds": 0, "notify": {}}, path="test")
+            led = _state.Ledger(cfg.state_db)
+            for m in ("Apr-2026", "May-2026", "Jun-2026", "Jul-2026"):
+                led.upsert("browns-garage-haywards-heath", m, status="posted",
+                           ea="2300.00", er_nic="2300.00", xero_journal_id="x")
+            led.close()
+            s = runner.run_once(cfg, xero_factory=lambda a: FakeXero(),
+                                log=lambda m: None, notify_enabled=False)
+            self.assertEqual(len(s["held"]), 1)
+            self.assertIn("annual maximum", s["held"][0]["note"])
+        finally:
+            tmp.cleanup()

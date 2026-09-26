@@ -1,0 +1,27 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests (stdlib only)
+        run: python -m unittest discover -s tests -v
+      - name: Mapping files validate
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import sys
+          from msx import mapping
+          ms = mapping.load_all("clients")
+          bad = {k: m.problems for k, m in ms.items() if m.problems}
+          print({k: (m.mode, mapping.placeholders(m.cfg)) for k, m in ms.items()})
+          sys.exit(1 if bad else 0)
+          PY
