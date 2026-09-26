@@ -42,8 +42,9 @@ mkdir -p ~/.config/msx
 cp ~/Moneysoftpayrolljournalsxero/config.example.json ~/.config/msx/config.json
 ```
 
-Edit it: `machine_name`, `pdf_root` (the Dropbox PDF attachments folder on
-THIS Mac), `clients_dir` (the repo's `clients/`), `xero.client_id`,
+Edit it: `machine_name`, `role` (`primary` on this one machine, `standby`
+on any other), `pdf_root` (the Dropbox PDF attachments folder on THIS Mac),
+`clients_dir` (the repo's `clients/`), `xero.client_id`,
 `notify.report_to`, `notify.missive_token_file` (a Missive API token in a
 file, `chmod 600`, created in Missive > Settings > API by a user who can send
 from the payroll address), and optionally `notify.heartbeat_url` (a
@@ -102,8 +103,11 @@ launchctl kickstart -k gui/$(id -u)/uk.co.digivolve.msx
 tail -f ~/.config/msx/launchd.log
 ```
 
-Every 30 minutes: idempotent, silent when nothing is new. The Mac must not
-sleep (Energy Saver / `caffeinate` - the payroll-agent already needs this).
+At :05 and :35 every hour (calendar triggers, so firings missed while
+asleep run at wake): idempotent, silent when nothing is new. Best on an
+always-on Mac (Energy Saver never sleep; the payroll-agent already needs
+the Mac awake for the VM). Another run cannot start while one is in
+progress (lock file next to the ledger).
 If `token_store` is `keychain`, unlock the login keychain once after a reboot
 (launchd agents run in the user session, so the login keychain is available
 once the user has logged in).
