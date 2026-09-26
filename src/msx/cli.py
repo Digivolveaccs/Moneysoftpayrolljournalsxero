@@ -51,7 +51,8 @@ def cmd_run(args):
         cfg, xero_factory=make_xero_factory(cfg), mode_override=args.mode,
         dry_run=args.dry_run, only_clients=args.client_name,
         only_periods=[args.period] if args.period else None,
-        min_period=args.since, notify_enabled=not args.no_notify)
+        min_period=args.since, notify_enabled=not args.no_notify,
+        take_over=args.take_over)
     print(json.dumps({k: (len(v) if isinstance(v, list) else v)
                       for k, v in summary.items()
                       if k not in ("warnings",)}, indent=1, default=str))
@@ -335,6 +336,9 @@ def main(argv=None):
                    "default = start of the current tax year")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-notify", action="store_true")
+    p.add_argument("--take-over", action="store_true",
+                   help="on a standby machine: post even though the primary "
+                        "may be alive")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("build", help="parse report(s) and write the CSV only")

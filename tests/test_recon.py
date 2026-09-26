@@ -57,6 +57,15 @@ class ReconTests(unittest.TestCase):
         kinds = sorted(f["kind"] for f in self.sweep())
         self.assertEqual(kinds, ["draft-aging", "mismatch"])
 
+    def test_no_journal_for_active_client(self):
+        self.assertEqual([f["kind"] for f in self.sweep()], ["no-journal"])
+        self.m.cfg["active_from"] = "Jun-2026"
+        self.assertEqual(self.sweep(), [])
+        self.m.cfg.pop("active_from")
+        self.m.cfg["xero"]["client_posts_own_journal"] = True
+        self.add("REP", "Wages April 2026", "POSTED", "2026-04-28", 2095.00)
+        self.assertEqual(self.sweep(), [])          # their journal is expected
+
     def test_shadow_clients_with_nothing_posted_are_skipped(self):
         self.m.cfg["mode"] = "shadow"
         self.add("REP", "Wages April 2026", "POSTED", "2026-04-28", 2095.00)

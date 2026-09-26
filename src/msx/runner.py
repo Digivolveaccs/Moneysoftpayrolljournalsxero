@@ -99,6 +99,7 @@ def process_group(ctx, client, period, files, summary):
                 raise Hold(f"{os.path.basename(p)} is not a readable PDF "
                            "(online-only Dropbox placeholder? re-download it)",
                            stage="discover")
+        stats = {p: (os.stat(p).st_size, os.stat(p).st_mtime) for p in paths}
         row = ctx.ledger.get(slug, period)
         payroll = summary_parser.parse_files(paths)
         if not m.matches_employer(payroll.get("client") or client):
@@ -175,6 +176,18 @@ def process_group(ctx, client, period, files, summary):
                                              note="Xero unreachable earlier in "
                                              "this run - deferred"))
             return
+        # the source must not have changed between build and post
+        if mode != "shadow":
+            for pth, st0 in stats.items():
+                try:
+                    st1 = os.stat(pth)
+                except FileNotFoundError:
+                    st1 = None
+                if not st1 or (st1.st_size, st1.st_mtime) != st0:
+                    summary["pending"].append(_entry(client, period,
+                                                     note=f"{os.path.basename(pth)} "
+                                                     "changed during the run"))
+                    return
         xero = ctx.xero_for(m) if mode != "shadow" else None
         try:
             res = poster.post_journal(journal, m, ctx.ledger, xero, mode=mode,
@@ -272,9 +285,33 @@ def keepalive(cfg, ledger, xero_factory, summary, log, every_days=7):
                                        f"{type(exc).__name__}: {exc}")
 
 
+def standby_guard(cfg, mode_override, take_over, summary, clock):
+    """A standby machine never posts unless told to take over, or unless the
+    primary's heartbeat (a copy synced via Dropbox) is older than 24 h."""
+    role = (cfg.data.get("role") or "primary").lower()
+    if role != "standby":
+        return mode_override
+    if take_over:
+        summary["warnings"].append("STANDBY machine posting under --take-over")
+        return mode_override
+    hb = cfg.path_of("primary_heartbeat_file")
+    age_h = None
+    if hb and os.path.exists(hb):
+        now = (clock or datetime.datetime.now)().timestamp()
+        age_h = (now - os.path.getmtime(hb)) / 3600
+    if age_h is not None and age_h > 24:
+        summary["warnings"].append(f"primary heartbeat is {age_h:.0f}h old - "
+                                   "standby is posting")
+        return mode_override
+    summary["warnings"].append("standby machine: shadow only (primary alive "
+                               "or unknown); use --take-over to post")
+    return "shadow"
+
+
 def run_once(cfg, *, xero_factory, log=print, mode_override=None,
              dry_run=False, only_clients=None, only_periods=None,
-             min_period=None, notify_enabled=True, clock=None):
+             min_period=None, notify_enabled=True, clock=None,
+             take_over=False):
     ledger = state.Ledger(cfg.state_db, machine=cfg.machine_name)
     run_id = new_run_id(clock)
     ledger.start_run(run_id)
@@ -286,6 +323,8 @@ def run_once(cfg, *, xero_factory, log=print, mode_override=None,
                "pending": [], "failed": [], "warnings": [],
                "already_shadow": 0, "ignored_old": 0}
     try:
+        mode_override = standby_guard(cfg, mode_override, take_over, summary,
+                                      clock)
         mappings = mapping_mod.load_all(cfg.clients_dir)
         ctx = RunContext(cfg, ledger=ledger, mappings=mappings,
                          xero_factory=xero_factory, log=log,

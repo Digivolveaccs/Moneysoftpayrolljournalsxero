@@ -161,6 +161,18 @@ class Mapping:
             names.add(alias)
         return names
 
+    def active_for(self, period):
+        """True unless active_from / active_to (Mon-YYYY) exclude the period."""
+        from .sources import period_sort_key
+        k = period_sort_key(period)
+        af = self.cfg.get("active_from")
+        at = self.cfg.get("active_to")
+        if af and k < period_sort_key(af):
+            return False
+        if at and k > period_sort_key(at):
+            return False
+        return True
+
     def matches_employer(self, report_client_name):
         key = normalise_name(report_client_name)
         return any(normalise_name(n) == key for n in self.employer_names)

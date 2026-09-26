@@ -21,6 +21,11 @@ import datetime
 from .poster import WAGES_RE, month_window, resolve_tenant
 
 
+def _period_end(period):
+    from .journal_builder import period_parts
+    return period_parts(period)[3]
+
+
 def _total_debits(full):
     return round(sum(float(l.get("LineAmount", 0)) for l in
                      full.get("JournalLines", []) or []
@@ -42,6 +47,7 @@ def sweep(mappings, ledger, xero_for, *, periods, draft_age_days=14,
         if m.mode == "shadow" and not any(
                 rows.get((slug, p), {}).get("xero_journal_id") for p in periods):
             continue                       # nothing of ours can be in Xero
+        own = (m.cfg.get("xero") or {}).get("client_posts_own_journal")
         try:
             xero = xero_for(m)
             tenant = resolve_tenant(m, xero.tenants())
@@ -114,7 +120,19 @@ def sweep(mappings, ledger, xero_for, *, periods, draft_age_days=14,
                                              "period": period, "journal": jid,
                                              "note": f"DRAFT created {created} still "
                                                      "not approved in Xero"})
+            if m.mode in ("draft", "post") and m.active_for(period) and not own \
+                    and not (row and (row.get("xero_journal_id")
+                                      or row.get("status") == "skipped")) \
+                    and not live and (today - _period_end(period)).days >= 0:
+                findings.append({"kind": "no-journal", "client": m.client,
+                                 "period": period, "journal": "",
+                                 "note": "active client in " + m.mode + " mode "
+                                         "with no journal in Xero and nothing "
+                                         "in the ledger - payroll not run, "
+                                         "report not filed, or held?"})
             for e in live:
+                if own:
+                    break                  # their journal is expected
                 if not row or e["id"] != row.get("xero_journal_id"):
                     findings.append({"kind": "orphan", "client": m.client,
                                      "period": period, "journal": e["id"],

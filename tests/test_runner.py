@@ -180,6 +180,16 @@ class RunnerTests(unittest.TestCase):
         s2 = self.run_once()
         self.assertEqual(len(s2["posted"]), 3)
 
+    def test_standby_role_is_shadow_only(self):
+        self.set_mode("post")
+        self.cfg.data["role"] = "standby"
+        s = self.run_once()
+        self.assertEqual(s["posted"], [])
+        self.assertEqual(len(s["shadow"]), 2)
+        self.assertTrue(any("standby" in w for w in s["warnings"]))
+        s2 = self.run_once(take_over=True)
+        self.assertEqual(len(s2["posted"]), 2)
+
     def test_pending_when_file_not_settled(self):
         self.cfg.data["settle_seconds"] = 10 ** 9
         s = self.run_once()
