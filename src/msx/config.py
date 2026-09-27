@@ -128,11 +128,18 @@ class Config:
             raise Hold(f"config has no Xero app named '{name}' - add "
                        "xero.client_id (or xero.apps.<name>.client_id)",
                        stage="config")
+        if not str(app.get("client_id") or "").strip():
+            raise Hold(f"Xero app '{name}' has an empty client_id in the "
+                       "config - fill it in or remove the app", stage="config")
         app.setdefault("redirect_uri", x.get("redirect_uri",
                                              "http://localhost:8400/callback"))
         app.setdefault("token_store", x.get("token_store", "file"))
-        app.setdefault("token_file", x.get("token_file",
-                                           f"~/.config/msx/tokens-{name}.json"))
+        # the top-level token_file belongs to the default app only; every
+        # other app gets its own file so rotated refresh tokens never collide
+        if name == "default" and x.get("token_file"):
+            app.setdefault("token_file", x["token_file"])
+        else:
+            app.setdefault("token_file", f"~/.config/msx/tokens-{name}.json")
         app["name"] = name
         return app
 

@@ -57,9 +57,13 @@ def slugify(name):
 
 
 def normalise_name(name):
-    """Company-name key for matching report headers to mappings."""
-    s = (name or "").lower()
-    s = re.sub(r"\b(ltd|limited|llp|plc|the)\b", "", s)
+    """Company-name key for matching report headers to mappings and Xero
+    organisations. Keeps the legal form (Ltd, LLP, PLC) because 'Smith LLP'
+    and 'Smith Ltd' are different entities; only spelling variants are
+    unified ('Limited' -> 'ltd', '&' -> 'and', punctuation/space dropped)."""
+    s = (name or "").lower().replace("&", " and ")
+    s = re.sub(r"\blimited\b", "ltd", s)
+    s = re.sub(r"\bt/as?\b", " tas ", s)
     return re.sub(r"[^a-z0-9]", "", s)
 
 
@@ -88,6 +92,16 @@ def validate(cfg, *, path="<mapping>"):
     if rule not in DATE_RULES and not re.match(r"^\d{2}/\d{2}/\d{4}$", rule):
         problems.append(f"{path}: journal_date '{rule}' must be month_end or a "
                         "one-off dd/mm/yyyy")
+    overrides = cfg.get("journal_date_overrides") or {}
+    if not isinstance(overrides, dict):
+        problems.append(f"{path}: journal_date_overrides must be an object "
+                        "{'Mon-YYYY': 'dd/mm/yyyy'}")
+    else:
+        for per, val in overrides.items():
+            if not re.match(r"^[A-Z][a-z]{2}-\d{4}$", str(per)) \
+                    or not re.match(r"^\d{2}/\d{2}/\d{4}$", str(val)):
+                problems.append(f"{path}: journal_date_overrides entry "
+                                f"'{per}': '{val}' must be Mon-YYYY: dd/mm/yyyy")
     freq = cfg.get("paye_frequency", "monthly")
     if freq not in FREQUENCIES:
         problems.append(f"{path}: paye_frequency '{freq}' must be one of "
@@ -192,6 +206,8 @@ def load(path):
             cfg = json.load(fh)
         except json.JSONDecodeError as exc:
             raise Hold(f"{path}: not valid JSON ({exc})", stage="mapping")
+    if not isinstance(cfg, dict):
+        raise Hold(f"{path}: must be a JSON object", stage="mapping")
     if "slug" not in cfg:
         cfg["slug"] = os.path.splitext(os.path.basename(path))[0]
     return Mapping(cfg, path)
@@ -208,6 +224,26 @@ def load_all(clients_dir):
             raise Hold(f"two mapping files share slug '{m.slug}': "
                        f"{out[m.slug].path} and {path}", stage="mapping")
         out[m.slug] = m
+    # two clients must never point at one Xero organisation
+    by_tenant, by_name = {}, {}
+    for m in out.values():
+        x = m.cfg.get("xero") or {}
+        app = x.get("app") or "default"
+        tid = (x.get("tenant_id") or "").strip()
+        if tid:
+            key = (app, tid)
+            if key in by_tenant:
+                raise Hold(f"{m.path} and {by_tenant[key].path} both pin Xero "
+                           f"tenant {tid} - one of them is wrong", stage="mapping")
+            by_tenant[key] = m
+        name = normalise_name(x.get("org_name") or "")
+        if name:
+            key = (app, name)
+            if key in by_name:
+                raise Hold(f"{m.path} and {by_name[key].path} both name the Xero "
+                           f"organisation '{x.get('org_name')}' - one of them "
+                           "is wrong", stage="mapping")
+            by_name[key] = m
     return out
 
 

@@ -161,6 +161,9 @@ def sections(lines):
                 if first:
                     rows.append((cells[0].strip(), cells))
                 i += 1
+            if not any(label == "__total__" for label, _ in rows):
+                fail("a pasted table has no Total row - it is what proves "
+                     "every column; paste the whole report")
             out.append((header, rows))
             continue
         i += 1
@@ -192,6 +195,14 @@ def read_table(header, rows):
             totals = rec
         else:
             people[label] = rec
+    if not people:
+        fail("no employee rows found in a pasted table")
+    for key, want in (totals or {}).items():
+        got = round(sum(p.get(key, 0.0) for p in people.values()), 2)
+        if abs(got - round(want, 2)) > 0.005:
+            fail(f"column '{key}' reads {got:.2f} across employees but the "
+                 f"report's Total row says {want:.2f} - a cell is shifted, "
+                 "do not post this")
     return people, totals
 
 
@@ -264,9 +275,12 @@ def money_runs(line):
 def fixed_tables(lines):
     """-> [(layout_name, header_lines, data_lines, total_line)] per table."""
     out = []
+    covered = []
     for i, line in enumerate(lines):
         if "Layout:" not in line:
             continue
+        if any(h < i < e for h, e in covered):
+            continue                 # title band repeated on a continuation page
         m = LAYOUT_RE.search(line)
         layout = (m.group(1).lower() if m else "unknown")
         head = None
@@ -286,6 +300,7 @@ def fixed_tables(lines):
                  "include it, it is what proves every column")
         out.append((layout, lines[i + 1:head + 1], lines[head + 1:end],
                     lines[end]))
+        covered.append((i, end))
     return out
 
 
@@ -417,13 +432,18 @@ def parse_text(text):
 
     # report header: client name, then 'Employer's Summary', then the period
     client, period, tax_year = None, None, None
+    title_re = re.compile(r"Employer\s*['\u2019]?\s*s\s+Summar", re.I)
     for idx, line in enumerate(lines):
-        if "Employer's Summary" in line or "Employers Summary" in line:
+        if title_re.search(line) and not FOOTER.search(line) \
+                and len(line.strip()) < 40:
             for back in range(idx - 1, -1, -1):
                 if lines[back].strip():
                     client = lines[back].strip()
                     break
             break
+    if not client:
+        fail("could not find the employer name above the 'Employer's Summary' "
+             "title - is this an Employer's Summary report?")
     for line in lines:
         m = re.match(r"^\s*(%s)-(\d{4})\s*$" % "|".join(MONTHS), line)
         if m:

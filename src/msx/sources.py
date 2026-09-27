@@ -22,7 +22,7 @@ SUMMARY_RE = re.compile(
     r"for (?P<period>[A-Z][a-z]{2}-\d{4})\.(?:pdf|txt)$")
 P30_RE = re.compile(
     r"^(?P<client>.+?) - P30 Employer's Payslip for (?P<span>[A-Z][a-z]{2}-\d{4}"
-    r"(?: to [A-Z][a-z]{2}-\d{4})?)\.pdf$")
+    r"(?: to [A-Z][a-z]{2}-\d{4})?)\.(?:pdf|txt)$")
 CONFLICT_RE = re.compile(r"conflicted copy|\(\d+\)\.(?:pdf|txt)$", re.I)
 MONTHS = {m: i + 1 for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun",

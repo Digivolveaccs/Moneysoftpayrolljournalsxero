@@ -28,7 +28,9 @@ class ReconTests(unittest.TestCase):
         self.xero.existing.append({"id": jid, "narration": narration,
                                    "status": status, "date": date})
         self.xero.full[jid] = {"JournalLines": [{"LineAmount": total},
-                                                {"LineAmount": -total}]}
+                                                {"LineAmount": -total}],
+                               "Narration": narration, "Status": status,
+                               "Date": date}
 
     def sweep(self, periods=("Apr-2026",)):
         return recon.sweep({"browns": self.m}, self.led, lambda m: self.xero,
@@ -75,3 +77,17 @@ class ReconTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ReviewRoundTwoReconTests(ReconTests):
+    def test_no_journal_has_a_grace_period(self):
+        self.today = datetime.date(2026, 4, 30)
+        self.assertEqual(self.sweep(), [])
+        self.today = datetime.date(2026, 5, 8)
+        self.assertEqual([f["kind"] for f in self.sweep()], ["no-journal"])
+
+    def test_redated_journal_is_found_by_id(self):
+        self.led.mark_posted("browns", "Apr-2026", xero_journal_id="MJ1",
+                             total_debits="41463.73", journal_date="2026-06-01")
+        self.add("MJ1", "Payroll - April 2026 (M1)", "POSTED", "2026-06-01", 41463.73)
+        self.assertEqual(self.sweep(), [])

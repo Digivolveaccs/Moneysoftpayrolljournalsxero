@@ -43,7 +43,8 @@ bin/msx approve <slug> <Mon-YYYY>    # promote the pipeline's DRAFT to POSTED
 bin/msx approve --all-drafts [--period Mon-YYYY]   # after Matt has reviewed them in Xero
 bin/msx chart <slug>                 # the org's chart of accounts (for mapping)
 bin/msx auth login|check|tenants     # Xero connection (human signs in)
-bin/msx ledger clear <slug> <period> # only after a human voided the Xero journal
+bin/msx ledger clear <slug> <period> # refuses while the Xero journal still stands
+bin/msx ledger accept <slug> <period> # a human has inspected a read-back mismatch
 ```
 
 Exit code 2 = something is held; 3 = configuration/auth problem. Read
@@ -61,10 +62,11 @@ Each hold names its stage. Do exactly this per stage, nothing more:
 | `parse` | unrecognised column / layout misread / report header mismatch | Open the PDF. New column type -> tell Matt; it needs adding to the parser (engineering). Wrong folder -> tell the operator; do not move files. |
 | `build` | figures do not reconcile, employee not mapped, code missing, placeholder | Not mapped: add the person to the mapping with the same code as their team-mates **only if Matt confirms**; otherwise leave held. Reconciliation failure: quote the tool's line to Matt - an EPS item (SMP recovery, CIS suffered) or a report layout is missing. |
 | `reconcile` | P30 disagrees with the journal / EA over the annual max | Attach both figures for Matt. Never adjust. |
-| `tenant` / `accounts` / `lock` | Xero org not connected / code missing or archived / period locked | Connected apps: `msx auth login` with the practice login and pick the org. Codes: `msx chart <slug>` and fix the mapping from the client's real chart. Locked period: Matt unlocks or approves a re-date (`--date` on `msx build`, noted in narration). |
+| `tenant` / `accounts` / `lock` | Xero org not connected, tenant id and org name disagree / code missing, archived or wrong class / period locked | Connected apps: `msx auth login` with the practice login and pick the org. Tenant mismatch: fix the mapping, never guess. Codes: `msx chart <slug>` and fix the mapping from the client's real chart. Locked period: Matt unlocks, or approves a one-off `journal_date_overrides` entry for that month. |
 | `duplicate` | a wages-looking journal already sits in that month | Open it in Xero. Repeating journal or manual posting -> Matt decides which survives; if ours is not wanted, set the client to `shadow`. If theirs is wrong, they void it, then `msx run` again. |
-| `rerun` | the filed report now builds a different journal from the one already in Xero | The payroll was re-run after posting. Report old vs new totals to Matt. Correction is a human decision (delta journal or void + `msx ledger clear` + `msx run`). |
-| `post` | Xero refused the write | Read the ValidationErrors text in the note; usually a code or lock date. Fix the cause, `msx run`. |
+| `rerun` | the filed report now builds different figures (or a nil month) from the journal already in Xero | The payroll was re-run after posting. Report old vs new totals to Matt. Correction is a human decision (delta journal, or void in Xero then `msx ledger clear` then `msx run`). The hold repeats every run until resolved. |
+| `post` | Xero refused the write | Read the ValidationErrors text in the note; usually a code or lock date. Fix the mapping; the journal is not re-sent until the mapping or the figures change. |
+| `verify` | Xero accepted the journal but it reads back differently | Open the journal in Xero. If it is right, `msx ledger accept`; if not, void it and `msx ledger clear`. Never approve it while held. |
 | `discover` | Dropbox conflicted copy / unreadable PDF | Tell the operator which file; they pick the real one and delete the other. Never delete files yourself. |
 | `bug` | unexpected exception | Paste the traceback to Matt / the engineer. |
 

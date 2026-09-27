@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS journals (
     ea TEXT,
     er_nic TEXT,
     idempotency_key TEXT,
+    source_stat TEXT,
     machine TEXT,
     note TEXT,
     created_at TEXT NOT NULL,
@@ -93,7 +94,7 @@ class Ledger:
 
     def _migrate(self):
         have = {r["name"] for r in self.db.execute("PRAGMA table_info(journals)")}
-        for col in ("ea", "er_nic", "idempotency_key"):
+        for col in ("ea", "er_nic", "idempotency_key", "source_stat"):
             if col not in have:
                 self.db.execute(f"ALTER TABLE journals ADD COLUMN {col} TEXT")
 

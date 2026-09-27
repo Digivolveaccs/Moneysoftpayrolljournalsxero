@@ -62,6 +62,20 @@ def sweep(mappings, ledger, xero_for, *, periods, draft_age_days=14,
             try:
                 existing = xero.find_manual_journals(tid, start, end,
                                                      include_deleted=True)
+                # the pipeline's own journal may sit outside the window
+                # (one-off re-date); read it back by id so it is never
+                # reported as missing
+                r0 = rows.get((slug, period))
+                if r0 and r0.get("xero_journal_id") and \
+                        r0["xero_journal_id"] not in {e["id"] for e in existing}:
+                    full = xero.manual_journal(tid, r0["xero_journal_id"])
+                    if full:
+                        from .xero_client import _xero_date
+                        existing = list(existing) + [{
+                            "id": r0["xero_journal_id"],
+                            "narration": full.get("Narration") or "",
+                            "status": full.get("Status"),
+                            "date": _xero_date(full.get("Date"))}]
             except Exception as exc:
                 findings.append({"kind": "unreachable", "client": m.client,
                                  "period": period, "note": str(exc)})
@@ -127,7 +141,7 @@ def sweep(mappings, ledger, xero_for, *, periods, draft_age_days=14,
             if m.mode in ("draft", "post") and m.active_for(period) and not own \
                     and not (row and (row.get("xero_journal_id")
                                       or row.get("status") == "skipped")) \
-                    and not live and (today - _period_end(period)).days >= 0:
+                    and not live and (today - _period_end(period)).days >= 7:
                 findings.append({"kind": "no-journal", "client": m.client,
                                  "period": period, "journal": "",
                                  "note": "active client in " + m.mode + " mode "

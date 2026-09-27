@@ -293,3 +293,61 @@ class BuilderEpsAndEdgeCases(unittest.TestCase):
         self.assertEqual(et["ser_compensation"], 34.0)
         self.assertEqual(et["cis_suffered"], 1000.0)
         self.assertEqual(et["apprenticeship_levy"], 0.0)
+
+
+class ReviewRoundTwoParserTests(unittest.TestCase):
+    def text(self):
+        with open(os.path.join(FIX, "browns_apr2026_tabbed.txt")) as fh:
+            return fh.read()
+
+    def test_shifted_cell_in_pasted_table_holds(self):
+        t = self.text().replace("Robert Jones\t1257L\t5,068.45\t1,047.50\t \t \t4,020.95",
+                                "Robert Jones\t1257L\t5,068.45\t5,068.45\t \t \t ", 1)
+        with self.assertRaises(Hold):
+            summary_parser.parse_text(t)
+
+    def test_missing_total_row_holds(self):
+        lines = [l for l in self.text().splitlines() if not l.startswith("Total\t")]
+        with self.assertRaises(Hold):
+            summary_parser.parse_text("\n".join(lines))
+
+    def test_missing_client_header_holds_and_typographic_apostrophe_ok(self):
+        t = self.text().replace("Employer's Summary", "Employer’s Summary")
+        pay = summary_parser.parse_text(t)
+        self.assertEqual(pay["client"], "Browns Garage (Haywards Heath) Limited")
+        t2 = self.text().replace("Employer's Summary\n", "Something else\n")
+        with self.assertRaises(Hold):
+            summary_parser.parse_text(t2)
+
+    def test_no_employee_rows_with_money_due_holds(self):
+        pay = {"client": "X", "period": "Apr-2026", "employees": [],
+               "report_totals": {}, "employer_totals": {"total_tax_nic_due": 100.0}}
+        with self.assertRaises(Hold):
+            journal_builder.build(pay, load_mapping())
+
+    def test_placeholder_attachment_code_holds(self):
+        pay = summary_parser.parse_files([os.path.join(FIX, "browns_apr2026_tabbed.txt")])
+        e = pay["employees"][2]
+        e["attachments"] = 50.0
+        e["net"] = round(e["net"] - 50.0, 2)
+        pay["report_totals"]["attachments"] = 50.0
+        pay["report_totals"]["net"] = round(pay["report_totals"]["net"] - 50.0, 2)
+        pay["employer_totals"]["total_net_pay"] = round(pay["employer_totals"]["total_net_pay"] - 50.0, 2)
+        pay["employer_totals"]["total_net_outlay"] = round(pay["employer_totals"]["total_net_outlay"] - 50.0, 2)
+        cfg = load_mapping()
+        cfg["codes"]["attachments_payable"] = "TBC-attachments-payable"
+        with self.assertRaises(Hold) as cm:
+            journal_builder.build(pay, cfg)
+        self.assertIn("placeholder", str(cm.exception))
+
+    def test_continuation_page_title_band_is_not_a_second_table(self):
+        with open(os.path.join(FIX, "browns_jul2026_layout.txt")) as fh:
+            lines = fh.read().splitlines()
+        # find the Medium table and re-insert its title band mid-table
+        start = next(i for i, l in enumerate(lines) if "Layout: Medium" in l)
+        head = next(i for i in range(start, len(lines)) if lines[i].startswith("Employee"))
+        band = lines[start - 3:start + 1]
+        insert_at = head + 5
+        new = lines[:insert_at] + [""] + band + lines[insert_at:]
+        pay = summary_parser.parse_text("\n".join(new))
+        self.assertEqual(len(pay["employees"]), 11)

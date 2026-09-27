@@ -47,6 +47,10 @@ class FakeXero:
         return [e for e in self.existing if start <= e["date"] <= end
                 and (include_deleted or e["status"] not in ("DELETED", "VOIDED"))]
 
+    def find_manual_journals_by_narration(self, tid, narration):
+        return [e for e in self.existing if e["narration"] == narration
+                and e["status"] not in ("DELETED", "VOIDED")]
+
     def manual_journal(self, tid, jid):
         return self.full.get(jid)
 
@@ -368,3 +372,67 @@ class P30Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ReviewRoundTwoPosterTests(PosterTests):
+    """Regressions for the second review round (idempotency / wrong-org)."""
+
+    def test_pinned_tenant_must_match_org_name(self):
+        self.xero.tenant_list.append({"tenant_id": "T2", "name": "Other Client Ltd",
+                                      "type": "ORGANISATION"})
+        self.map.cfg["xero"]["tenant_id"] = "T2"        # copy/paste slip
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "tenant")
+        self.assertIn("Other Client Ltd", str(cm.exception))
+        self.assertEqual(self.xero.created, [])
+
+    def test_journal_dated_outside_month_is_still_found(self):
+        # one-off re-date for a locked period: journal sits on 1 June
+        self.map.cfg["journal_date_overrides"] = {"Apr-2026": "01/06/2026"}
+        from msx import journal_builder, summary_parser
+        pay = summary_parser.parse_files([os.path.join(FIX, "browns_apr2026_tabbed.txt")])
+        j = journal_builder.build(pay, self.map.cfg)
+        self.assertEqual(j.date, "01/06/2026")
+        r = poster.post_journal(j, self.map, self.ledger, self.xero)
+        self.assertEqual(r.outcome, "draft")
+        self.xero.existing = [{"id": "MJ1", "narration": j.narration,
+                               "status": "DRAFT", "date": "2026-06-01"}]
+        # the override is removed: same lines, month-end date; ledger cleared
+        self.ledger.db.execute("DELETE FROM journals")
+        j2 = journal_builder.build(pay, browns_mapping().cfg)
+        with self.assertRaises(Skip):
+            poster.post_journal(j2, self.map, self.ledger, self.xero)
+        self.assertEqual(len(self.xero.created), 1)
+
+    def test_transport_error_keeps_posting_row(self):
+        def boom(*a, **k):
+            raise OSError("connection reset")
+        self.xero.create_manual_journal = boom
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "post-retry")
+        self.assertEqual(self.ledger.get("browns", "Apr-2026")["status"], "posting")
+
+    def test_posting_row_with_different_tenant_holds(self):
+        self.ledger.mark_intent("browns", "Apr-2026", xero_tenant_id="T9",
+                                idempotency_key="K", payload_sha=self.journal.figures_fingerprint())
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "tenant")
+        self.assertEqual(self.xero.created, [])
+
+    def test_shadow_does_not_clobber_posting_row(self):
+        self.ledger.mark_intent("browns", "Apr-2026")
+        with self.assertRaises(Hold):
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero, mode="shadow")
+        self.assertEqual(self.ledger.get("browns", "Apr-2026")["status"], "posting")
+
+    def test_approve_refuses_post_write_mismatch(self):
+        self.xero.tamper = lambda full: full["JournalLines"].pop()
+        with self.assertRaises(Hold):
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        with self.assertRaises(Hold) as cm:
+            poster.approve("browns", "Apr-2026", self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "verify")
+        self.assertEqual(self.xero.status_changes, [])

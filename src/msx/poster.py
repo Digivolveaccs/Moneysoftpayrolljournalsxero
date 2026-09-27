@@ -65,6 +65,7 @@ def resolve_tenant(mapping, tenants):
     matches xero.org_name after normalisation. Never fuzzy."""
     xero_cfg = mapping.cfg.get("xero") or {}
     tid = (xero_cfg.get("tenant_id") or "").strip()
+    name = (xero_cfg.get("org_name") or "").strip()
     if tid:
         hit = [t for t in tenants if t["tenant_id"] == tid]
         if not hit:
@@ -72,8 +73,13 @@ def resolve_tenant(mapping, tenants):
                        "the organisations this Xero app is connected to - "
                        "reconnect the org (msx auth login) or fix the mapping",
                        stage="tenant")
+        if name and normalise_name(hit[0]["name"] or "") != normalise_name(name):
+            raise Hold(f"{mapping.client}: xero.tenant_id {tid} is the "
+                       f"organisation '{hit[0]['name']}' but the mapping's "
+                       f"xero.org_name is '{name}' - one of them is wrong "
+                       "(copied from another client?); fix the mapping",
+                       stage="tenant")
         return hit[0]
-    name = (xero_cfg.get("org_name") or "").strip()
     if not name:
         raise Hold(f"{mapping.client}: mapping has neither xero.tenant_id nor "
                    "xero.org_name", stage="tenant")
@@ -103,9 +109,11 @@ def check_lock_dates(org, journal):
                                 f"org's {label} {lock}")
     if problems:
         raise Hold(f"{org.get('name')}: " + "; ".join(problems)
-                   + " - unlock the period in Xero, or set journal_date to "
-                   "the first open day (dd/mm/yyyy) in the client mapping "
-                   "for this month and revert it afterwards",
+                   + " - unlock the period in Xero, or add a one-off date "
+                   "for this month only to the client mapping: "
+                   f"\"journal_date_overrides\": {{\"{journal.period}\": "
+                   "\"dd/mm/yyyy\"}} (the first open day) and note it in "
+                   "the mapping's notes",
                    stage="lock")
 
 
@@ -224,10 +232,39 @@ def month_window(period, tail_days=10):
 
 
 def duplicate_guard(xero, tenant_id, journal, ledger_row):
-    """Returns ('none', None) | ('adopt', existing) | raises Skip/Hold."""
+    """Returns ('none', None) | ('adopt', existing) | raises Skip/Hold.
+
+    Searches the period's calendar month (plus tail) AND a window around the
+    journal's own date, and reads back any journal id the ledger already
+    holds, so a journal dated outside the month (a one-off re-date for a
+    locked period) can never hide from the exact-narration check."""
     start, end = month_window(journal.period)
     existing = xero.find_manual_journals(tenant_id, start, end)
-    exact = [e for e in existing if e["narration"].strip() == journal.narration]
+    seen = {e["id"] for e in existing}
+    jdate = datetime.date.fromisoformat(journal.iso_date())
+    j_start = (jdate - datetime.timedelta(days=3)).isoformat()
+    j_end = (jdate + datetime.timedelta(days=3)).isoformat()
+    merged = list(existing)
+    if not (start <= j_start and j_end <= end):
+        for e in xero.find_manual_journals(tenant_id, j_start, j_end):
+            if e["id"] not in seen:
+                merged.append(e)
+                seen.add(e["id"])
+    finder = getattr(xero, "find_manual_journals_by_narration", None)
+    if finder:
+        for e in finder(tenant_id, journal.narration):
+            if e["id"] not in seen:
+                merged.append(e)
+                seen.add(e["id"])
+    if ledger_row and ledger_row.get("xero_journal_id") \
+            and ledger_row["xero_journal_id"] not in seen:
+        full = xero.manual_journal(tenant_id, ledger_row["xero_journal_id"])
+        if full and full.get("Status") not in ("DELETED", "VOIDED"):
+            merged.append({"id": ledger_row["xero_journal_id"],
+                           "narration": full.get("Narration") or "",
+                           "status": full.get("Status"),
+                           "date": _date_of(full.get("Date"))})
+    exact = [e for e in merged if e["narration"].strip() == journal.narration]
     if exact:
         e = exact[0]
         if len(exact) > 1:
@@ -280,13 +317,31 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
                 mapping_sha=mapping.fingerprint, payload_sha=payload_sha,
                 mode=mode)
 
+    if row and row.get("status") == "posting" and mode != "shadow":
+        if row.get("xero_tenant_id") and (mapping.cfg.get("xero") or {}).get("tenant_id") \
+                and row["xero_tenant_id"] != (mapping.cfg.get("xero") or {}).get("tenant_id"):
+            raise Hold(f"{mapping.client} {period}: an interrupted post was "
+                       f"sent to tenant {row['xero_tenant_id']} but the mapping "
+                       "now names a different tenant - check that organisation "
+                       "for the journal and clear the ledger row before "
+                       "anything is sent elsewhere", stage="tenant")
     if mode == "shadow":
+        if row and row.get("status") == "posting":
+            raise Hold(f"{mapping.client} {period}: a post was interrupted "
+                       "(ledger row 'posting'); run this client in draft/post "
+                       "mode so the journal in Xero can be adopted, do not "
+                       "leave it in shadow", stage="post-retry")
         ledger.upsert(slug, period, status="shadow",
                       note="shadow mode - built and reconciled, not sent",
                       **base)
         return PostResult("shadow", message="shadow mode: journal built and "
                           "reconciled, nothing sent to Xero", checks=checks)
     if (mapping.cfg.get("xero") or {}).get("client_posts_own_journal"):
+        if row and row.get("status") == "posting":
+            raise Hold(f"{mapping.client} {period}: ledger row is 'posting' "
+                       "(an earlier post was interrupted) but the mapping now "
+                       "says the client posts their own journal - check Xero "
+                       "and clear the row", stage="duplicate")
         ledger.upsert(slug, period, status="skipped",
                       note="client posts their own wages journal - recon only",
                       **base)
@@ -296,6 +351,13 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
 
     tenant = resolve_tenant(mapping, xero.tenants())
     tid = tenant["tenant_id"]
+    if row and row.get("status") == "posting" and row.get("xero_tenant_id") \
+            and row["xero_tenant_id"] != tid:
+        raise Hold(f"{mapping.client} {period}: an interrupted post went to "
+                   f"tenant {row['xero_tenant_id']} but the mapping now "
+                   f"resolves to {tid} ({tenant['name']}) - check the first "
+                   "organisation for the journal and clear the ledger row "
+                   "before anything is sent to the second", stage="tenant")
     checks["tenant"] = tenant["name"]
     org = xero.organisation(tid)
     check_lock_dates(org, journal)
@@ -323,7 +385,10 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
     # reuse the key of an interrupted attempt so a retry is byte-identical
     idem = None
     if row and row.get("status") == "posting" and row.get("idempotency_key") \
-            and row.get("payload_sha") == payload_sha:
+            and row.get("payload_sha") == payload_sha \
+            and row.get("xero_tenant_id") == tid \
+            and row.get("journal_date") == journal.iso_date() \
+            and row.get("narration") == journal.narration:
         idem = row["idempotency_key"]
     idem = idem or hashlib.sha256(
         f"{tid}|{journal.narration}|{journal.iso_date()}|{request_sha}"
@@ -343,12 +408,22 @@ def post_journal(journal, mapping, ledger, xero, *, mode=None, dry_run=False,
                            xero_tenant_id=tid, **base)
         raise Hold(f"{mapping.client} {period}: {exc}", stage="post",
                    details={"xero": exc.body})
+    except Exception as exc:
+        # anything that is not a definite refusal (socket errors, decode
+        # errors, bugs in the transport) leaves the write-ahead row in place
+        raise Hold(f"{mapping.client} {period}: error during the Xero write "
+                   f"({type(exc).__name__}: {exc}) - the journal may or may "
+                   "not exist; will reconcile against Xero next run",
+                   stage="post-retry")
     jid = created.get("ManualJournalID")
     xstatus = created.get("Status") or payload["Status"]
     status = "posted" if xstatus == "POSTED" else "draft"
     ledger.mark_posted(slug, period, xero_journal_id=jid, status=status,
                        xero_tenant_id=tid, note="", **base)
-    problems = verify_written(xero, tid, jid, journal, payload["Status"])
+    try:
+        problems = verify_written(xero, tid, jid, journal, payload["Status"])
+    except Exception as exc:
+        problems = [f"read-back failed: {type(exc).__name__}: {exc}"]
     if problems:
         ledger.upsert(slug, period, note="POST-WRITE MISMATCH: "
                       + "; ".join(problems))
@@ -372,6 +447,10 @@ def approve(slug, period, ledger, xero):
                    stage="approve")
     if row["status"] == "posted":
         raise Skip(f"{slug} {period}: already posted", reason="ledger")
+    if (row.get("note") or "").startswith("POST-WRITE MISMATCH"):
+        raise Hold(f"{slug} {period}: journal {row['xero_journal_id']} read "
+                   f"back differently from what was sent ({row['note']}) - "
+                   "inspect it in Xero; not approving it", stage="verify")
     j = xero.set_manual_journal_status(row["xero_tenant_id"],
                                        row["xero_journal_id"], "POSTED")
     ledger.mark_posted(slug, period, xero_journal_id=row["xero_journal_id"],

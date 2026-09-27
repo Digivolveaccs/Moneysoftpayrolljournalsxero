@@ -356,3 +356,128 @@ class YearToDateEaTests(unittest.TestCase):
             self.assertIn("annual maximum", s["held"][0]["note"])
         finally:
             tmp.cleanup()
+
+
+class ReviewRoundTwoRunnerTests(RunnerTests):
+    def folder(self):
+        return os.path.join(self.pdf_root,
+                            "Browns Garage (Haywards Heath) Limited 2026-27")
+
+    def test_nil_rerun_after_posting_holds(self):
+        self.set_mode("post")
+        self.run_once()
+        p = os.path.join(self.folder(), "Browns Garage (Haywards Heath) Limited"
+                         " - Employer's Summary for Apr-2026.txt")
+        nil = ("Browns Garage (Haywards Heath) Limited 2026-27\nEmployer's Summary\n"
+               "Apr-2026\nAll Employees, Layout: Medium\n\n"
+               "Employer Totals:\n\tPAYE Month\t\nTotal Net Pay\t0.00\t\n"
+               "Total Tax & NIC Due\t0.00\t\nTOTAL NET OUTLAY\t0.00\t\n")
+        with open(p, "w") as fh:
+            fh.write(nil)
+        os.utime(p, (1_600_000_000, 1_600_000_000))
+        s = self.run_once()
+        held = [h for h in s["held"] if h["period"] == "Apr-2026"]
+        self.assertEqual(len(held), 1)
+        self.assertEqual(held[0]["stage"], "rerun")
+        row = state.Ledger(self.cfg.state_db).get("browns-garage-haywards-heath", "Apr-2026")
+        self.assertEqual(row["status"], "posted")            # never downgraded
+        # the same hold is reported on every run until cleared
+        s2 = self.run_once()
+        self.assertEqual(len([h for h in s2["held"] if h["period"] == "Apr-2026"]), 1)
+
+    def test_post_write_mismatch_is_reheld_every_run(self):
+        self.set_mode("draft")
+        self.xero.tamper = lambda full: full["JournalLines"].pop()
+        s1 = self.run_once()
+        self.assertEqual(len(s1["held"]), 2)
+        self.xero.tamper = None
+        s2 = self.run_once()
+        self.assertEqual(len(s2["held"]), 2)
+        self.assertTrue(all(h["stage"] == "verify" for h in s2["held"]))
+        self.assertEqual(len(self.xero.created), 2)
+
+    def test_posting_row_survives_a_prewrite_hold(self):
+        self.set_mode("post")
+        led = state.Ledger(self.cfg.state_db)
+        led.mark_intent("browns-garage-haywards-heath", "Apr-2026",
+                        xero_tenant_id="T1", idempotency_key="K")
+        led.close()
+        self.xero.org["period_lock_date"] = "2026-12-31"     # lock -> Hold
+        s = self.run_once()
+        self.assertTrue(any(h["stage"] == "lock" for h in s["held"]))
+        row = state.Ledger(self.cfg.state_db).get("browns-garage-haywards-heath", "Apr-2026")
+        self.assertEqual(row["status"], "posting")
+
+    def test_definite_refusal_not_retried_until_something_changes(self):
+        from msx.xero_client import XeroError
+        self.set_mode("post")
+        self.xero.fail_create = XeroError("400 bad code", status=400)
+        s1 = self.run_once()
+        self.assertEqual(len(s1["held"]), 2)
+        n = len(self.xero.created)
+        self.xero.fail_create = None
+        s2 = self.run_once()                 # nothing changed: no new PUT
+        self.assertEqual(len(self.xero.created), n)
+        self.assertEqual(len(s2["failed"]), 2)
+        self.set_mode("draft")               # mapping changed -> retried
+        s3 = self.run_once()
+        self.assertEqual(len(s3["draft"]), 2)
+
+    def test_p30_syncing_is_pending_and_quarterly_is_informational(self):
+        self.set_mode("post")
+        p30 = os.path.join(self.folder(), "Browns Garage (Haywards Heath) Limited"
+                           " - P30 Employer's Payslip for Apr-2026 to Jun-2026.txt")
+        with open(p30, "w") as fh:
+            fh.write("Employer's Payslip for Apr-2026 to Jun-2026\n"
+                     "Tax & NIC due for Apr-2026 to Jun-2026   9,000.00\n")
+        self.cfg.data["settle_seconds"] = 60
+        s = self.run_once()                  # P30 mtime = now -> not stable
+        self.assertTrue(any("P30 still syncing" in e["note"] for e in s["pending"]))
+        self.assertNotIn("Apr-2026", [e["period"] for e in s["posted"]])
+        os.utime(p30, (1_600_000_000, 1_600_000_000))
+        s2 = self.run_once()
+        apr = [e for e in s2["posted"] if e["period"] == "Apr-2026"][0]
+        self.assertEqual(apr["p30"], "informational")
+        self.assertTrue(any("without a P30" in w for w in s2["warnings"]))
+
+    def test_inactive_window_holds(self):
+        p = os.path.join(self.clients, "browns-garage-haywards-heath.json")
+        with open(p) as fh:
+            cfg = json.load(fh)
+        cfg["active_to"] = "Jun-2026"
+        with open(p, "w") as fh:
+            json.dump(cfg, fh)
+        s = self.run_once()
+        self.assertEqual([h["period"] for h in s["held"]], ["Jul-2026"])
+        self.assertEqual([e["period"] for e in s["shadow"]], ["Apr-2026"])
+
+    def test_csv_only_written_when_not_held(self):
+        with open(os.path.join(self.clients, "browns-garage-haywards-heath.json")) as fh:
+            cfg = json.load(fh)
+        del cfg["employees"]["Sally Jones"]
+        with open(os.path.join(self.clients, "browns-garage-haywards-heath.json"), "w") as fh:
+            json.dump(cfg, fh)
+        self.run_once()
+        d = os.path.join(self.cfg.out_dir, "browns-garage-haywards-heath", "Apr-2026")
+        self.assertFalse(os.path.exists(os.path.join(d, "journal.csv")))
+
+    def test_run_level_bug_still_reports(self):
+        with open(os.path.join(self.clients, "zzz.json"), "w") as fh:
+            fh.write("[1, 2]")
+        s = self.run_once()
+        self.assertTrue(any(h["client"] == "(run)" for h in s["held"]))
+        self.assertTrue(os.path.exists(os.path.join(self.cfg.out_dir, "HOLDS.md")))
+        self.assertTrue(runner.system_problems(s))
+
+    def test_unchanged_source_is_not_reparsed(self):
+        self.set_mode("post")
+        self.run_once()
+        import msx.summary_parser as sp
+        orig = sp.parse_files
+        calls = []
+        sp.parse_files = lambda *a, **k: (calls.append(1), orig(*a, **k))[1]
+        try:
+            self.run_once()
+        finally:
+            sp.parse_files = orig
+        self.assertEqual(calls, [])

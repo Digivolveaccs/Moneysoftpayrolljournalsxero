@@ -32,7 +32,7 @@ KIND_PATTERNS = [
                                r"\bers? nic\b|employer ni", re.I)),
     ("er_pension_cost", re.compile(r"employer'?s? ?pension|\ber pension|"
                                    r"pension (cost|contribution)", re.I)),
-    ("pensions_payable", re.compile(r"pensions? payable|nest|pension liab|"
+    ("pensions_payable", re.compile(r"pensions? payable|\bnest\b|pension liab|"
                                     r"pension (control|creditor)", re.I)),
     ("paye_payable", re.compile(r"paye|hmrc|tax (&|and) ni|nic payable|"
                                 r"income tax", re.I)),
@@ -40,7 +40,7 @@ KIND_PATTERNS = [
                                  r"net salar", re.I)),
     ("dividend_code", re.compile(r"dividend(?! tax)", re.I)),
     ("dividend_tax_code", re.compile(r"dividend tax", re.I)),
-    ("attachments_payable", re.compile(r"attachment|earnings order|dea\b|"
+    ("attachments_payable", re.compile(r"attachment|earnings order|\bdea\b|"
                                        r"court order", re.I)),
     ("pay_code", re.compile(r"gross|salar|wage|remuneration|basic pay|"
                             r"directors? pay", re.I)),
@@ -62,18 +62,25 @@ def name_tokens(name):
 
 
 def match_employee(description, employees):
-    """Employee whose full name, or initial+surname, appears in the text."""
+    """Employee whose full name, or initial+surname, appears in the text.
+    A tier that matches two people returns None: never guess between them."""
     d = description.lower()
-    for name in employees:
-        if name.lower() in d:
-            return name
+    full = [n for n in employees
+            if re.search(r"\b" + re.escape(n.lower()) + r"\b", d)]
+    if len(full) == 1:
+        return full[0]
+    if len(full) > 1:
+        return None
+    partial = []
     for name in employees:
         toks = name_tokens(name)
         if len(toks) >= 2:
             init_sur = f"{toks[0][0]} {toks[-1]}"
-            if init_sur in d or (toks[-1] in d and toks[0][0] + "." in d):
-                return name
-    return None
+            if re.search(r"\b" + re.escape(init_sur) + r"\b", d) or \
+                    re.search(r"\b" + re.escape(toks[0][0]) + r"\.\s*"
+                              + re.escape(toks[-1]) + r"\b", d):
+                partial.append(name)
+    return partial[0] if len(partial) == 1 else None
 
 
 def classify_line(line, accounts, employees):
@@ -82,8 +89,12 @@ def classify_line(line, accounts, employees):
     amt = float(line.get("LineAmount") or 0)
     who = match_employee(desc, employees)
     kind = None
+    # a person's name must never supply the kind ('Ernest' contains 'nest')
+    desc_for_kind = desc
+    for n in employees:
+        desc_for_kind = re.sub(re.escape(n), " ", desc_for_kind, flags=re.I)
     for k, rx in KIND_PATTERNS:
-        if rx.search(desc):
+        if rx.search(desc_for_kind):
             kind = k
             break
     if kind is None:
@@ -94,10 +105,8 @@ def classify_line(line, accounts, employees):
             if rx.search(name):
                 kind = k
                 break
-        if kind is None and cls == "EXPENSE" and amt > 0:
-            kind = "pay_code"
-        elif kind is None and cls == "LIABILITY" and amt < 0:
-            kind = "wages_payable" if who else "paye_payable"
+        # no class-only guessing: an unnamed liability credit is NOT evidence
+        # of the PAYE control account - leave it for the human
     # sign sanity: costs are debits, payables credits; and a "cost" on a
     # liability account (or a payable on an expense account) is not evidence
     acct_cls = ((accounts.get(code) or {}).get("class") or "").upper()
@@ -135,10 +144,15 @@ def propose(payroll, xero, mapping_stub, *, months=6, today=None):
     tid = tenant["tenant_id"]
     accounts = xero.accounts(tid)
     journals = wages_journals(xero, tid, months=months, today=today)
-    codes = {}
+    codes = {}            # kind -> set of codes seen
     emp_codes = {n: {} for n in employees}
     evidence = []
     unresolved = []
+    conflicts = []
+
+    def seen(kind, code, bucket=None):
+        target = bucket if bucket is not None else codes
+        target.setdefault(kind, set()).add(code)
     for j in journals[-3:]:
         full = xero.manual_journal(tid, j["id"]) or {}
         for line in full.get("JournalLines", []) or []:
@@ -148,16 +162,34 @@ def propose(payroll, xero, mapping_stub, *, months=6, today=None):
                 continue
             if c["kind"] in ("pay_code", "dividend_code", "dividend_tax_code") \
                     and c["employee"]:
-                emp_codes[c["employee"]].setdefault(c["kind"], c["code"])
+                seen(c["kind"], c["code"], emp_codes[c["employee"]])
                 if c["kind"] == "dividend_code":
-                    codes.setdefault("dividend_code", c["code"])
+                    seen("dividend_code", c["code"])
             elif c["kind"] == "pay_code" and not c["employee"]:
-                codes.setdefault("_pay_code_default", c["code"])
+                seen("_pay_code_default", c["code"])
             else:
-                codes.setdefault(c["kind"], c["code"])
+                seen(c["kind"], c["code"])
             evidence.append(f"{j['narration']} ({j['date']}): {c['kind']} "
                             f"<- {c['code']} '{c['description'][:60]}'")
-    default_pay = codes.pop("_pay_code_default", None)
+
+    def one(kind, bucket=None, label=None):
+        """The single code seen for a kind, or None when none/conflicting."""
+        target = bucket if bucket is not None else codes
+        vals = target.get(kind) or set()
+        if len(vals) == 1:
+            return next(iter(vals))
+        if len(vals) > 1:
+            conflicts.append(f"{label or kind}: {sorted(vals)}")
+        return None
+
+    named_pay = any(emp_codes[n].get("pay_code") for n in employees)
+    default_pay = None if named_pay else one("_pay_code_default",
+                                             label="unnamed pay lines")
+    for k in list(codes):
+        codes[k] = one(k) if k != "_pay_code_default" else None
+    for n in employees:
+        for k in list(emp_codes[n]):
+            emp_codes[n][k] = one(k, emp_codes[n], label=f"{n}.{k}")
     mapping = json.loads(json.dumps(mapping_stub))
     mapping.setdefault("xero", {})["tenant_id"] = tid
     mapping["xero"]["org_name"] = tenant["name"]
@@ -204,6 +236,7 @@ def propose(payroll, xero, mapping_stub, *, months=6, today=None):
     mapping["approved_on"] = ""
     report = {"tenant": tenant, "journals_seen": len(journals),
               "evidence": evidence, "unresolved_lines": unresolved,
+              "conflicts": conflicts,
               "placeholders": [k for k, v in mapping["codes"].items()
                                if str(v).startswith("TBC")]
               + [f"{n}.{k}" for n, r in mapping["employees"].items()

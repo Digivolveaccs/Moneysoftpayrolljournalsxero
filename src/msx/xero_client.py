@@ -22,10 +22,12 @@ Endpoints used: /connections, /api.xro/2.0/Organisation, /Accounts,
 """
 import base64
 import hashlib
+import http.client
 import http.server
 import json
 import os
 import random
+import re
 import secrets
 import socket
 import subprocess
@@ -144,6 +146,11 @@ class UrllibTransport:
                 return resp.status, dict(resp.headers), resp.read()
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            # DNS, TLS, reset, timeout: the request MAY have reached Xero -
+            # callers treat this as retryable, never as a bug or a refusal
+            raise XeroError(f"network error talking to Xero: {exc}",
+                            retryable=True)
 
 
 def _b64url(raw):
@@ -278,6 +285,16 @@ class XeroClient:
             return self._tokens["access_token"]
 
     def _refresh_locked(self):
+        # another msx process (recon, approve, doctor) may have rotated the
+        # token since we loaded it: adopt the stored copy if it is newer
+        stored = self.token_store.load()
+        if stored and self._tokens and \
+                stored.get("refresh_token") != self._tokens.get("refresh_token") \
+                and stored.get("obtained_at", 0) > self._tokens.get("obtained_at", 0):
+            self._tokens = stored
+            age = self._clock() - stored.get("obtained_at", 0)
+            if age < int(stored.get("expires_in", 1800)) - 120:
+                return
         if self.client_secret:
             self._tokens = self._token_request(
                 {"grant_type": "client_credentials",
@@ -464,6 +481,16 @@ class XeroClient:
             page += 1
         return out
 
+    def find_manual_journals_by_narration(self, tenant_id, narration):
+        """Journals carrying exactly this narration, whatever their date."""
+        esc = narration.replace("\\", "\\\\").replace('"', '\\"')
+        data = self._call("GET", f"{API_BASE}/ManualJournals", tenant_id=tenant_id,
+                          params={"where": f'Narration=="{esc}"'})
+        return [{"id": j.get("ManualJournalID"), "narration": j.get("Narration") or "",
+                 "status": j.get("Status"), "date": _xero_date(j.get("Date"))}
+                for j in data.get("ManualJournals") or []
+                if j.get("Status") not in ("DELETED", "VOIDED")]
+
     def manual_journal(self, tenant_id, journal_id):
         data = self._call("GET", f"{API_BASE}/ManualJournals/{journal_id}",
                           tenant_id=tenant_id)
@@ -513,11 +540,10 @@ def _xero_date(value):
         return None
     s = str(value)
     if s.startswith("/Date("):
-        try:
-            ms = int(s[6:].split("+")[0].split("-")[0].rstrip(")/"))
-            return time.strftime("%Y-%m-%d", time.gmtime(ms / 1000))
-        except ValueError:
-            return None
+        m = re.match(r"^/Date\((-?\d+)(?:[+-]\d{4})?\)/$", s)
+        if not m:
+            raise XeroError(f"unparseable Xero date {s!r}")
+        return time.strftime("%Y-%m-%d", time.gmtime(int(m.group(1)) / 1000))
     return s[:10]
 
 

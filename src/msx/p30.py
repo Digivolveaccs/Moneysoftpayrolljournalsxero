@@ -37,7 +37,10 @@ def parse_p30_text(text):
 
 
 def parse_p30_file(path):
-    return parse_p30_text(pdf_to_text(path))
+    if path.lower().endswith(".pdf"):
+        return parse_p30_text(pdf_to_text(path))
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return parse_p30_text(fh.read())
 
 
 def cross_check(p30, journal):

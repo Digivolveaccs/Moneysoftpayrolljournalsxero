@@ -76,6 +76,12 @@ def cmd_build(args):
     payroll = summary_parser.parse_files(args.reports)
     if args.client:
         m = mappings[args.client]
+        if payroll.get("client") and not m.matches_employer(payroll["client"]) \
+                and not args.force_client:
+            raise Hold(f"report header says '{payroll['client']}' but --client "
+                       f"names the mapping for '{m.client}' - wrong mapping "
+                       "(use --force-client only if this is intentional)",
+                       stage="mapping")
     else:
         m = mapping_mod.find_for_report(mappings, payroll["client"])
     m.ensure_valid()
@@ -168,12 +174,41 @@ def cmd_ledger(args):
         row = led.get(args.slug, args.period)
         if not row:
             print("no such row")
+            led.close()
             return 0
+        if row.get("xero_journal_id") and not args.force:
+            # refuse unless the journal is gone from Xero: clearing a row
+            # whose journal still stands is how a duplicate gets posted
+            mappings = mapping_mod.load_all(cfg.clients_dir)
+            m = mappings.get(args.slug)
+            status = "unknown"
+            if m and row.get("xero_tenant_id"):
+                try:
+                    xero = make_xero_factory(cfg)((m.cfg.get("xero") or {}).get("app", "default"))
+                    full = xero.manual_journal(row["xero_tenant_id"], row["xero_journal_id"])
+                    status = (full or {}).get("Status") or "gone"
+                except Exception as exc:
+                    status = f"unknown ({exc})"
+            if status not in ("VOIDED", "DELETED", "gone"):
+                print(f"refusing: Xero journal {row['xero_journal_id']} is "
+                      f"{status} - void it in Xero first, or pass --force")
+                led.close()
+                return 2
         led.event(kind="ledger_clear", slug=args.slug, period=args.period,
                   detail=row)
         led.db.execute("DELETE FROM journals WHERE slug=? AND period=?",
                        (args.slug, args.period))
         print("cleared", args.slug, args.period, "(was", row["status"], ")")
+    elif args.action == "accept":
+        row = led.get(args.slug, args.period)
+        if not row or not (row.get("note") or "").startswith("POST-WRITE MISMATCH"):
+            print("nothing to accept (no POST-WRITE MISMATCH on that row)")
+        else:
+            led.event(kind="ledger_accept", slug=args.slug, period=args.period,
+                      detail=row["note"])
+            led.upsert(args.slug, args.period, note="accepted by a human: "
+                       + row["note"][:1500])
+            print("accepted", args.slug, args.period)
     elif args.action == "export":
         n = led.export_csv(args.path)
         print("exported", n, "rows to", args.path)
@@ -400,6 +435,7 @@ def main(argv=None):
     p.add_argument("--out")
     p.add_argument("--date", help="override journal date dd/mm/yyyy")
     p.add_argument("--allow-placeholders", action="store_true")
+    p.add_argument("--force-client", action="store_true")
     p.set_defaults(func=cmd_build)
 
     p = sub.add_parser("approve", help="promote a DRAFT the pipeline created")
@@ -415,10 +451,12 @@ def main(argv=None):
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("ledger")
-    p.add_argument("action", choices=("clear", "export"))
+    p.add_argument("action", choices=("clear", "accept", "export"))
     p.add_argument("slug", nargs="?")
     p.add_argument("period", nargs="?")
     p.add_argument("--path", default="ledger.csv")
+    p.add_argument("--force", action="store_true",
+                   help="clear even though the Xero journal still stands")
     p.set_defaults(func=cmd_ledger)
 
     p = sub.add_parser("auth")

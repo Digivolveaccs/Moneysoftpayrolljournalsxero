@@ -167,12 +167,12 @@ class Journal:
         return body
 
     def figures_fingerprint(self):
-        """SHA-256 of what the journal *is* (date, narration, lines) -
-        independent of DRAFT/POSTED status, so a mode change is never
-        mistaken for a payroll re-run and a re-run is never hidden by one."""
+        """SHA-256 of the journal LINES only (code, amount, description) -
+        independent of status, date and narration, so a mode change, a
+        one-off re-date or a narration template edit is never mistaken for a
+        payroll re-run, and a re-run is never hidden by one."""
         import hashlib
-        canon = json.dumps({"d": self.iso_date(), "n": self.narration,
-                            "l": [[l.account_code, f"{l.amount:.2f}",
+        canon = json.dumps({"l": [[l.account_code, f"{l.amount:.2f}",
                                    l.description] for l in self.lines]},
                            sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canon.encode("utf-8")).hexdigest()
@@ -214,6 +214,12 @@ def resolve_journal_date(cfg, month_end, *, date_override=None, pay_date=None,
         if not DATE_RE.match(date_override):
             holds.append(f"--date '{date_override}' must be dd/mm/yyyy")
         return date_override
+    per_period = (cfg.get("journal_date_overrides") or {}).get(cfg.get("_period"))
+    if per_period:
+        if not DATE_RE.match(str(per_period)):
+            holds.append(f"journal_date_overrides['{cfg.get('_period')}'] "
+                         f"'{per_period}' must be dd/mm/yyyy")
+        return str(per_period)
     rule = (cfg.get("journal_date") or "month_end").strip()
     if rule == "month_end":
         return month_end
@@ -261,14 +267,28 @@ def _code_for(cfg, emp_cfg, key, who, label, holds):
 
 
 def is_nil(payroll):
-    """True when the report shows nothing paid at all (a nil month)."""
+    """True when the report shows nothing paid at all (a nil month). The
+    Employer Totals block must be nil too: employee rows that failed to
+    parse next to money owed to HMRC is a parse failure, not a nil month."""
     emps = payroll.get("employees", [])
     totals = payroll.get("report_totals", {})
+    employer = payroll.get("employer_totals", {})
+    money_keys = ("total_net_pay", "total_tax_nic_due", "total_other_payments",
+                  "total_net_outlay", "paye_tax", "ee_nic", "er_nic")
+    employer_money = any(abs(D(employer.get(k, 0.0))) >= TOL for k in money_keys)
     if not emps and not totals:
+        if employer_money:
+            raise Hold("the report has no employee rows but its Employer "
+                       "Totals show money due - the employee table did not "
+                       "parse (missing Medium layout? tabs lost in a paste?)",
+                       stage="parse")
         return True
     keys = ("total_payments", "net", "tax", "ee_nic", "er_nic",
             "ee_pension", "er_pension")
     if all(abs(D(totals.get(k, 0.0))) < TOL for k in keys):
+        if employer_money:
+            raise Hold("employee rows are all nil but the Employer Totals "
+                       "show money due - inconsistent report", stage="parse")
         return all(all(abs(get(e, k)) < TOL for k in keys) for e in emps)
     return False
 
@@ -287,6 +307,7 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
                    reason="nil")
     cfg = dict(cfg)
     cfg["_tax_year"] = tax_year_of(payroll["period"])
+    cfg["_period"] = payroll["period"]
     codes = cfg.get("codes", {})
     warnings = []
 
@@ -464,7 +485,10 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
                 code = _code_for(cfg, ec, "dividend_code", who, "dividend",
                                  holds)
             elif add_codes.get(key):
-                code = str(add_codes[key])
+                code = expand_code(str(add_codes[key]), cfg["_tax_year"])
+                if code.upper().startswith("TBC"):
+                    holds.append(f"placeholder account code '{code}' still in "
+                                 f"addition_codes for {label.lower()} ({who})")
             else:
                 code = _code_for(cfg, ec, "pay_code", who, label.lower(),
                                  holds)
@@ -513,8 +537,9 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
             if a:
                 lines.append(Line(
                     f"Attachment of earnings - {e['name']} - {tag}",
-                    str(codes["attachments_payable"]), -a, "attachments",
-                    e["name"]))
+                    _code_for(cfg, {}, "attachments_payable", e["name"],
+                              "attachment of earnings", holds), -a,
+                    "attachments", e["name"]))
     if paye_line_amount:
         # one credit for the gross liability; EA, statutory recovery and SER
         # compensation are explicit Dr pairs below, so the code nets to the

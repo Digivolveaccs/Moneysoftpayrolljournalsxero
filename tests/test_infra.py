@@ -266,3 +266,71 @@ class LedgerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ReviewRoundTwoInfraTests(unittest.TestCase):
+    def test_legal_form_is_preserved_in_matching(self):
+        n = mapping.normalise_name
+        self.assertEqual(n("Smith Limited"), n("Smith Ltd"))
+        self.assertNotEqual(n("Smith LLP"), n("Smith Ltd"))
+        self.assertNotEqual(n("Smith"), n("Smith Ltd"))
+        self.assertEqual(n("Smith & Co Ltd"), n("Smith and Co Ltd"))
+
+    def test_two_mappings_one_tenant_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            for slug in ("a", "b"):
+                cfg = browns_cfg()
+                cfg["slug"] = slug
+                cfg["xero"]["tenant_id"] = "T1"
+                with open(os.path.join(d, slug + ".json"), "w") as fh:
+                    json.dump(cfg, fh)
+            with self.assertRaises(Hold) as cm:
+                mapping.load_all(d)
+            self.assertIn("T1", str(cm.exception))
+
+    def test_journal_date_overrides_validated(self):
+        cfg = browns_cfg()
+        cfg["journal_date_overrides"] = {"Apr-2026": "01/06/2026"}
+        self.assertEqual(mapping.Mapping(cfg).problems, [])
+        cfg["journal_date_overrides"] = {"April": "x"}
+        self.assertTrue(mapping.Mapping(cfg).problems)
+
+    def test_blank_client_id_and_token_file_isolation(self):
+        from msx import config as config_mod
+        cfg = config_mod.Config({"pdf_root": "/x", "clients_dir": "/y",
+                                 "xero": {"client_id": "A", "token_file": "~/t.json",
+                                          "apps": {"b": {"client_id": ""},
+                                                   "c": {"client_id": "C"}}}}, "t")
+        with self.assertRaises(Hold):
+            cfg.xero_app("b")
+        self.assertEqual(cfg.xero_app("default")["token_file"], "~/t.json")
+        self.assertNotEqual(cfg.xero_app("c")["token_file"], "~/t.json")
+
+    def test_transport_network_error_is_retryable(self):
+        import urllib.error
+        t = xero_client.UrllibTransport()
+        with self.assertRaises(xero_client.XeroError) as cm:
+            t.request("GET", "https://localhost:1/nothing", timeout=1)
+        self.assertTrue(cm.exception.retryable)
+
+    def test_xero_date_negative_and_garbage(self):
+        self.assertEqual(xero_client._xero_date("/Date(-86400000+0000)/"), "1969-12-31")
+        with self.assertRaises(xero_client.XeroError):
+            xero_client._xero_date("/Date(abc)/")
+
+    def test_refresh_adopts_a_token_rotated_by_another_process(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = xero_client.FileTokenStore(os.path.join(d, "t.json"))
+            now = [1_000_000]
+            transport = FakeTransport()
+            c = xero_client.XeroClient(client_id="cid", token_store=store,
+                                       transport=transport, clock=lambda: now[0])
+            store.save({"access_token": "A1", "refresh_token": "R1",
+                        "expires_in": 1800, "obtained_at": now[0] - 1800})
+            c._tokens = store.load()
+            # another process rotated it a moment ago
+            store.save({"access_token": "A2", "refresh_token": "R2",
+                        "expires_in": 1800, "obtained_at": now[0] - 10})
+            transport.expect("GET", "api.xero.com/connections", body=[])
+            c.tenants()
+            self.assertEqual(transport.calls[-1][2]["Authorization"], "Bearer A2")

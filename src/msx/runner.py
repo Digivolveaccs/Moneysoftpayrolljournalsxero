@@ -91,7 +91,24 @@ def process_group(ctx, client, period, files, summary):
         m = mapping_mod.find_for_report(ctx.mappings, client)
         slug = m.slug
         m.ensure_valid()
+        if not m.active_for(period):
+            raise Hold(f"{period} is outside the mapping's active window "
+                       f"({m.cfg.get('active_from') or '-'} .. "
+                       f"{m.cfg.get('active_to') or '-'}) - a report was filed "
+                       "for a period the practice does not post; extend "
+                       "active_to or remove the file", stage="mapping")
         paths = [f["path"] for f in files]
+        row = ctx.ledger.get(slug, period)
+        # content hash, not size+mtime: a re-export can keep both the same
+        stat_now = sources.source_fingerprint([p for p in paths if os.path.exists(p)])
+        if row and row.get("source_stat") == stat_now \
+                and row.get("status") in ("posted", "draft", "skipped", "shadow") \
+                and not (row.get("note") or "").startswith("POST-WRITE MISMATCH") \
+                and (row.get("status") != "shadow" or (ctx.mode_override or m.mode) == "shadow") \
+                and not ctx.dry_run:
+            if row["status"] == "shadow":
+                summary["already_shadow"] += 1
+            return                    # nothing changed since it was handled
         for p in paths:
             if not sources.stable(p, settle_seconds=ctx.cfg.settle_seconds,
                                   sample_wait=ctx.cfg.sample_wait):
@@ -104,8 +121,20 @@ def process_group(ctx, client, period, files, summary):
                            "(online-only Dropbox placeholder? re-download it)",
                            stage="discover")
         stats = {p: (os.stat(p).st_size, os.stat(p).st_mtime) for p in paths}
-        row = ctx.ledger.get(slug, period)
-        payroll = summary_parser.parse_files(paths)
+        if row and (row.get("note") or "").startswith("POST-WRITE MISMATCH"):
+            raise Hold(f"Xero journal {row.get('xero_journal_id')} read back "
+                       f"differently from what was sent ({row['note']}) - a "
+                       "human must inspect it in Xero, then either accept it "
+                       f"(msx ledger accept {slug} {period}) or void it and "
+                       "clear the row", stage="verify")
+        try:
+            payroll = summary_parser.parse_files(paths)
+        except Hold:
+            if row and row.get("xero_journal_id"):
+                raise Hold("the re-filed report no longer parses but journal "
+                           f"{row['xero_journal_id']} is already in Xero - "
+                           "check the export", stage="rerun")
+            raise
         if payroll.get("period") != period:
             raise Hold(f"the report inside says {payroll.get('period')} but the "
                        f"file is named for {period} - mis-filed or renamed "
@@ -115,28 +144,55 @@ def process_group(ctx, client, period, files, summary):
             raise Hold(f"report header says '{payroll.get('client')}' but the "
                        f"file is filed under '{client}' - wrong folder?",
                        stage="parse")
+        want_ty = journal_builder.tax_year_of(period)
+        if payroll.get("tax_year") and payroll["tax_year"] != want_ty:
+            summary["warnings"].append(
+                f"{client} {period}: report header says tax year "
+                f"{payroll['tax_year']} but {period} is in {want_ty} - was the "
+                "payroll run in the wrong Moneysoft year file?")
         notes = summary_parser.completeness_notes(payroll)
-        journal = journal_builder.build(payroll, m.cfg)
+        try:
+            journal = journal_builder.build(payroll, m.cfg)
+        except Skip as exc:
+            if row and row.get("xero_journal_id"):
+                raise Hold(f"the re-filed report now shows a nil payroll but "
+                           f"journal {row['xero_journal_id']} (Dr "
+                           f"{row.get('total_debits')}) is already in Xero - "
+                           "the payroll was re-run to nil; void the journal by "
+                           "hand and clear the ledger row", stage="rerun")
+            raise
         if notes:
             summary["warnings"].extend(f"{client} {period}: {n}" for n in notes)
 
         # P30 cross-check (independent report)
         p30_status, p30_msg = "missing", "no P30 found"
         p30_path = sources.find_p30(files[0]["folder"], client, period)
-        if p30_path and sources.stable(p30_path,
-                                       settle_seconds=ctx.cfg.settle_seconds,
-                                       sample_wait=ctx.cfg.sample_wait):
+        if p30_path:
+            if not sources.stable(p30_path, settle_seconds=ctx.cfg.settle_seconds,
+                                  sample_wait=ctx.cfg.sample_wait):
+                summary["pending"].append(_entry(client, period,
+                                                 note="P30 still syncing"))
+                return
             p30_status, p30_msg = p30_mod.cross_check(
                 p30_mod.parse_p30_file(p30_path), journal)
         if p30_status == "mismatch":
             raise Hold(f"P30 cross-check failed: {p30_msg}", stage="reconcile")
+        mode = ctx.mode_override or m.mode
+        if p30_status == "missing" and mode != "shadow":
+            if ctx.cfg.data.get("require_p30"):
+                raise Hold("no P30 filed for this month and require_p30 is set "
+                           "- the PAYE control cannot be proved by a second "
+                           "report", stage="reconcile")
+            summary["warnings"].append(f"{client} {period}: posted without a "
+                                       "P30 cross-check (no P30 filed)")
 
-        # write the build artefacts (CSV import file + JSON) every time
         out_dir = os.path.join(ctx.cfg.out_dir, slug, period)
         os.makedirs(out_dir, exist_ok=True)
-        with open(os.path.join(out_dir, "journal.csv"), "w", encoding="utf-8",
-                  newline="") as fh:
-            fh.write(journal.to_csv(m.cfg.get("tax_rate", "No VAT")))
+        for stale in ("journal.csv", "HELD.txt"):
+            try:
+                os.unlink(os.path.join(out_dir, stale))
+            except FileNotFoundError:
+                pass
         with open(os.path.join(out_dir, "journal.json"), "w",
                   encoding="utf-8") as fh:
             json.dump({"journal": journal.as_dict(), "payroll": payroll,
@@ -146,8 +202,16 @@ def process_group(ctx, client, period, files, summary):
                       fh, indent=1, default=str)
 
         # figures changed after we posted? (payroll re-run) -> human
-        mode = ctx.mode_override or m.mode
         payload_sha = journal.figures_fingerprint()
+        if row and row.get("xero_journal_id") and row.get("payload_sha") \
+                and row["payload_sha"] == payload_sha \
+                and row.get("journal_date") \
+                and row["journal_date"] != journal.iso_date():
+            summary["warnings"].append(
+                f"{client} {period}: same figures, but the mapping now dates "
+                f"the journal {journal.iso_date()} while Xero journal "
+                f"{row['xero_journal_id']} is dated {row['journal_date']} - "
+                "not a re-run; nothing changed in Xero")
         if row and row.get("xero_journal_id") and row.get("payload_sha") \
                 and row["payload_sha"] != payload_sha:
             raise Hold(f"the Employer's Summary now builds a different journal "
@@ -177,7 +241,19 @@ def process_group(ctx, client, period, files, summary):
                     paye_due=f"{journal.meta['paye_due']:.2f}",
                     p30=p30_status)
         ctx.ledger.upsert(slug, period, ea=f"{journal.meta['ea']:.2f}",
-                          er_nic=f"{journal.meta['er_nic']:.2f}")
+                          er_nic=f"{journal.meta['er_nic']:.2f}",
+                          source_stat=stat_now)
+        # a definite Xero refusal is not retried until something changed
+        if row and row.get("status") == "failed" \
+                and row.get("payload_sha") == payload_sha \
+                and row.get("mapping_sha") == m.fingerprint and mode != "shadow":
+            summary["failed"].append(_entry(client, period, note=row.get("note")))
+            raise Hold(f"Xero refused this journal last time and nothing has "
+                       f"changed since: {row.get('note')}", stage="post")
+        # the import-ready CSV only exists once every pre-write gate passed
+        with open(os.path.join(out_dir, "journal.csv"), "w", encoding="utf-8",
+                  newline="") as fh:
+            fh.write(journal.to_csv(m.cfg.get("tax_rate", "No VAT")))
         if mode != "shadow" and ctx.xero_down:
             summary["pending"].append(_entry(client, period,
                                              note="Xero unreachable earlier in "
@@ -204,7 +280,8 @@ def process_group(ctx, client, period, files, summary):
             if row and row.get("status") in ("posted", "draft") \
                     and exc.reason == "ledger":
                 return                         # quietly done already
-            ctx.ledger.mark_skipped(slug, period, str(exc), mode=mode)
+            if not (row and row.get("xero_journal_id")):
+                ctx.ledger.mark_skipped(slug, period, str(exc), mode=mode)
             summary["skipped"].append(_entry(client, period, note=str(exc)))
             return
         bucket = {"shadow": "shadow", "draft": "draft", "posted": "posted",
@@ -218,7 +295,9 @@ def process_group(ctx, client, period, files, summary):
                                       note=res.message))
         log(f"{client} {period}: {res.outcome} - {res.message}")
     except Skip as exc:
-        if slug:
+        prev = ctx.ledger.get(slug, period) if slug else None
+        if slug and not (prev and (prev.get("xero_journal_id")
+                                   or prev.get("status") == "posting")):
             ctx.ledger.mark_skipped(slug, period, str(exc))
         summary["skipped"].append(_entry(client, period, note=str(exc)))
         log(f"{client} {period}: skipped - {exc}")
@@ -236,11 +315,32 @@ def process_group(ctx, client, period, files, summary):
             return
         if slug:
             prev = ctx.ledger.get(slug, period)
-            if prev and prev.get("status") in ("posted", "draft") \
-                    and exc.stage != "rerun":
-                pass                           # keep the posted state
+            if prev and (prev.get("status") in ("posted", "draft", "posting")
+                         or prev.get("xero_journal_id")):
+                # never lose the record of a journal that is (or may be) in
+                # Xero: keep the status, record the reason (but keep a
+                # POST-WRITE MISMATCH marker until a human accepts it)
+                if not (prev.get("note") or "").startswith("POST-WRITE MISMATCH"):
+                    ctx.ledger.upsert(slug, period, note=note[:2000])
+            elif prev and prev.get("status") == "failed" and exc.stage == "post":
+                ctx.ledger.upsert(slug, period, note=note[:2000])
+                if not any(f["client"] == client and f["period"] == period
+                           for f in summary["failed"]):
+                    summary["failed"].append(_entry(client, period, note=note))
             else:
                 ctx.ledger.mark_held(slug, period, note)
+            try:
+                hd = os.path.join(ctx.cfg.out_dir, slug, period)
+                if os.path.isdir(hd):
+                    try:
+                        os.unlink(os.path.join(hd, "journal.csv"))
+                    except FileNotFoundError:
+                        pass
+                    with open(os.path.join(hd, "HELD.txt"), "w",
+                              encoding="utf-8") as fh:
+                        fh.write(f"HELD ({exc.stage})\n{note}\n")
+            except OSError:
+                pass
         summary["held"].append(_entry(client, period, stage=exc.stage,
                                       note=note))
         log(f"{client} {period}: HELD ({exc.stage}) - {note.splitlines()[0]}")
@@ -259,7 +359,12 @@ def process_group(ctx, client, period, files, summary):
         note = f"unexpected error {type(exc).__name__}: {exc}\n" \
                + traceback.format_exc(limit=3)
         if slug:
-            ctx.ledger.mark_held(slug, period, note)
+            prev = ctx.ledger.get(slug, period)
+            if prev and (prev.get("status") in ("posted", "draft", "posting")
+                         or prev.get("xero_journal_id")):
+                ctx.ledger.upsert(slug, period, note=note[:2000])
+            else:
+                ctx.ledger.mark_held(slug, period, note)
         summary["held"].append(_entry(client, period, stage="bug", note=note))
         log(f"{client} {period}: ERROR - {exc}")
 
@@ -268,8 +373,9 @@ def system_problems(summary):
     """Run-level faults that mean the PIPELINE is broken (as opposed to a
     client needing a human): bugs, config/lock/auth, Xero down."""
     out = [f"{h['client']} {h['period']}: {h['note'].splitlines()[0][:120]}"
-           for h in summary["held"] if h.get("stage") in ("bug", "lock",
-                                                          "config", "verify")]
+           for h in summary["held"]
+           if h.get("stage") in ("bug", "lock", "config", "verify")
+           or h.get("client") == "(run)"]
     out += [w for w in summary.get("warnings", [])
             if "AUTH REQUIRED" in w or "deferred" in w or "keep-alive failed" in w]
     return out
@@ -316,7 +422,7 @@ def keepalive(cfg, ledger, xero_factory, summary, log, every_days=7):
         try:
             cfg.xero_app(app)
         except Hold:
-            continue                        # app not configured
+            continue                        # app not configured / blank id
         last = ledger.db.execute(
             "SELECT at FROM events WHERE kind='xero_keepalive' AND detail=? "
             "ORDER BY id DESC LIMIT 1", (app,)).fetchone()
@@ -460,6 +566,11 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
         summary["held"].append(_entry("(run)", "-", stage=exc.stage,
                                       note=str(exc)))
         log(f"RUN HELD: {exc}")
+    except Exception as exc:  # a bug in the run itself: still report it
+        summary["held"].append(_entry("(run)", "-", stage="bug",
+                                      note=f"{type(exc).__name__}: {exc}\n"
+                                      + traceback.format_exc(limit=3)))
+        log(f"RUN ERROR: {exc}")
     finally:
         counts = {k: len(v) for k, v in summary.items() if isinstance(v, list)}
         ledger.finish_run(counts)

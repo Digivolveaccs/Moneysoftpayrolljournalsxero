@@ -118,3 +118,35 @@ class OnboardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ReviewRoundTwoOnboardTests(OnboardTests):
+    def test_ambiguous_initial_surname_is_unresolved(self):
+        emps = ["Chris Jones", "Carol Jones"]
+        self.assertIsNone(onboard.match_employee("Dividend tax - C Jones", emps))
+        self.assertEqual(onboard.match_employee("Dividend tax - Carol Jones", emps),
+                         "Carol Jones")
+
+    def test_employee_name_never_supplies_the_kind(self):
+        c = onboard.classify_line({"Description": "Ernest Brown", "AccountCode": "9",
+                                   "LineAmount": -500.0},
+                                  {"9": {"name": "Net pay control", "class": "LIABILITY"}},
+                                  ["Ernest Brown"])
+        self.assertNotEqual(c["kind"], "pensions_payable")
+
+    def test_unnamed_liability_credit_is_not_paye(self):
+        c = onboard.classify_line({"Description": "Student loan deductions",
+                                   "AccountCode": "2230", "LineAmount": -60.0},
+                                  {"2230": {"name": "Student Loan Deductions",
+                                            "class": "LIABILITY"}}, [])
+        self.assertIsNone(c["kind"])
+
+    def test_conflicting_unnamed_pay_codes_become_placeholders(self):
+        self.xero.full["J1"]["JournalLines"] = [
+            {"Description": "Directors remuneration", "AccountCode": "230", "LineAmount": 2000.0},
+            {"Description": "Staff wages", "AccountCode": "381", "LineAmount": 9000.0},
+        ]
+        m, report = onboard.propose(self.pay, self.xero, onboard.stub_for(self.pay),
+                                    today=datetime.date(2026, 5, 1))
+        self.assertTrue(all(r["pay_code"] == "TBC-pay-code" for r in m["employees"].values()))
+        self.assertTrue(report["conflicts"])

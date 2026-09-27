@@ -30,6 +30,7 @@ written against every journal the pipeline posts.
 | `xero.app` | Which configured Xero app holds this org's connection (`default` unless the practice runs several apps to stay under a connection cap) |
 | `mode` | `shadow` / `draft` / `post` |
 | `journal_date` | `month_end` (default; last day of the calendar month of the pay period). A literal `dd/mm/yyyy` is honoured for a one-off re-date (locked period); revert it afterwards. A pay-date rule is not offered until the parser can read the pay date from the filed reports |
+| `journal_date_overrides` | `{"Apr-2026": "01/06/2026"}`: a one-off date for one month only (a locked period). Nothing to revert afterwards |
 | `narration` | Template; must contain `{tag}` (`April 2026 (M1)`), `{month}` or `{period}` so each month is unique. Default `Payroll - {tag}` |
 | `tax_rate` | CSV tax rate name, default `No VAT` (API uses TaxType `NONE`) |
 | `show_on_cash_basis` | Xero's "show on cash basis reports" flag; default false (matches the CSV importer) |
