@@ -438,7 +438,8 @@ class ReviewRoundTwoRunnerTests(RunnerTests):
         s2 = self.run_once()
         apr = [e for e in s2["posted"] if e["period"] == "Apr-2026"][0]
         self.assertEqual(apr["p30"], "informational")
-        self.assertTrue(any("without a P30" in w for w in s2["warnings"]))
+        # Jul-2026 (no P30 at all) posted in the first run with a warning
+        self.assertTrue(any("without a P30" in w for w in s["warnings"]))
 
     def test_inactive_window_holds(self):
         p = os.path.join(self.clients, "browns-garage-haywards-heath.json")
