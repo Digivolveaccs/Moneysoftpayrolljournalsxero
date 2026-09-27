@@ -51,6 +51,10 @@ def current_tax_year_start(today=None):
     return f"Apr-{start}"
 
 
+def previous_tax_year_start(today=None):
+    return f"Apr-{int(current_tax_year_start(today).split('-')[1]) - 1}"
+
+
 class RunContext:
     def __init__(self, cfg, *, ledger, mappings, xero_factory, log,
                  mode_override=None, dry_run=False, clock=None):
@@ -102,6 +106,11 @@ def process_group(ctx, client, period, files, summary):
         stats = {p: (os.stat(p).st_size, os.stat(p).st_mtime) for p in paths}
         row = ctx.ledger.get(slug, period)
         payroll = summary_parser.parse_files(paths)
+        if payroll.get("period") != period:
+            raise Hold(f"the report inside says {payroll.get('period')} but the "
+                       f"file is named for {period} - mis-filed or renamed "
+                       "report; fix the file name before it is processed",
+                       stage="parse")
         if not m.matches_employer(payroll.get("client") or client):
             raise Hold(f"report header says '{payroll.get('client')}' but the "
                        f"file is filed under '{client}' - wrong folder?",
@@ -266,28 +275,32 @@ def system_problems(summary):
     return out
 
 
-def holds_changed(out_dir, summary):
-    """True when the set of held (client, period, first line) differs from
-    the last run that was reported - so a standing hold is emailed once,
-    not every 30 minutes. Persists the fingerprint in out_dir."""
+def holds_digest(summary):
     import hashlib
     key = "\n".join(sorted(f"{h['client']}|{h['period']}|"
                            f"{(h.get('note') or '').splitlines()[0]}"
                            for h in summary["held"]))
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def holds_changed(out_dir, summary):
+    """True when the set of held (client, period, first line) differs from
+    the last set that was successfully REPORTED - so a standing hold is
+    emailed once, not every 30 minutes, but an unsent report is retried."""
     path = os.path.join(out_dir, ".last_holds_reported")
-    prev = None
     try:
         with open(path, encoding="utf-8") as fh:
             prev = fh.read().strip()
     except FileNotFoundError:
-        pass
-    if prev == digest:
-        return False
+        prev = None
+    return prev != holds_digest(summary)
+
+
+def mark_holds_reported(out_dir, summary):
     os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, ".last_holds_reported")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(digest)
-    return True
+        fh.write(holds_digest(summary))
 
 
 def keepalive(cfg, ledger, xero_factory, summary, log, every_days=7):
@@ -396,7 +409,7 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
                "mode": mode_override or "per-client", "posted": [],
                "draft": [], "shadow": [], "skipped": [], "held": [],
                "pending": [], "failed": [], "warnings": [],
-               "already_shadow": 0, "ignored_old": 0}
+               "already_shadow": 0, "ignored_old": 0, "ignored": []}
     try:
         mode_override = standby_guard(cfg, mode_override, take_over, summary,
                                       clock)
@@ -418,13 +431,25 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
                                               f"copy: {r['path']} - a human must "
                                               "decide which file is real and "
                                               "remove the other"))
-        floor = min_period or current_tax_year_start(
+        # Default floor = start of the PREVIOUS tax year, never the current
+        # one: tax month 12 (Mar-YYYY) is routinely filed after 6 April and
+        # must not fall off the edge on the day the tax year rolls.
+        floor = min_period or previous_tax_year_start(
             (clock or datetime.datetime.now)().date())
         for (client, period), files in sources.group_summaries(rows).items():
             if sources.period_sort_key(period) < sources.period_sort_key(floor):
                 summary["ignored_old"] += 1
+                summary["ignored"].append(_entry(client, period,
+                                                 note=f"before floor {floor}"))
                 continue
             process_group(ctx, client, period, files, summary)
+        if summary["ignored"]:
+            summary["warnings"].append(
+                f"{len(summary['ignored'])} report(s) older than {floor} ignored: "
+                + ", ".join(f"{e['client']} {e['period']}"
+                            for e in summary["ignored"][:10])
+                + (" ..." if len(summary["ignored"]) > 10 else "")
+                + " (use --since to include them)")
         keepalive(cfg, ledger, xero_factory, summary, log)
         for stale in ledger.stale_intents(older_than_minutes=30):
             summary["warnings"].append(
@@ -463,7 +488,8 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
                                              notify.report_subject(summary),
                                              html)
             summary["notify"] = res
-            if not res.get("ok"):
+            sent = bool(res.get("ok"))
+            if not sent and not res.get("skipped"):
                 log(f"report not emailed via Missive: {res}")
                 graph = cfg.notify.get("graph")
                 if graph and cfg.notify.get("report_to"):
@@ -471,7 +497,15 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
                                                   notify.report_subject(summary),
                                                   html, cfg.notify["report_to"])
                     summary["notify_fallback"] = res2
-                    if not res2.get("ok"):
+                    sent = bool(res2.get("ok"))
+                    if not sent:
                         log(f"report not emailed via Graph either: {res2}")
+            if sent or res.get("skipped"):
+                mark_holds_reported(cfg.out_dir, summary)
+            elif summary["held"] or summary["posted"] or summary["draft"]:
+                summary["system_problems"].append(
+                    "run report could not be emailed (Missive"
+                    + (" and Graph" if summary.get("notify_fallback") else "")
+                    + f" failed): {res.get('error')}")
         summary["heartbeat"] = notify.heartbeat(cfg.notify, summary)
     return summary

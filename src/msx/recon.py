@@ -42,6 +42,7 @@ def sweep(mappings, ledger, xero_for, *, periods, draft_age_days=14,
     """-> list of finding dicts. ``periods`` = ['Aug-2026', ...]."""
     today = today or datetime.date.today()
     findings = []
+    seen_journals = set()
     rows = {(r["slug"], r["period"]): r for r in ledger.all_rows()}
     for slug, m in sorted(mappings.items()):
         if m.mode == "shadow" and not any(
@@ -65,7 +66,10 @@ def sweep(mappings, ledger, xero_for, *, periods, draft_age_days=14,
                 findings.append({"kind": "unreachable", "client": m.client,
                                  "period": period, "note": str(exc)})
                 continue
-            wages = [e for e in existing if WAGES_RE.search(e["narration"] or "")]
+            wages = [e for e in existing if WAGES_RE.search(e["narration"] or "")
+                     and (slug, e["id"]) not in seen_journals]
+            for e in wages:
+                seen_journals.add((slug, e["id"]))
             live = [e for e in wages if e["status"] in ("POSTED", "DRAFT")]
             row = rows.get((slug, period))
             totals = {}

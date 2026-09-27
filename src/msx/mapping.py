@@ -34,7 +34,9 @@ import re
 from .errors import Hold
 
 MODES = ("shadow", "draft", "post")
-DATE_RULES = ("month_end", "pay_date")
+# 'pay_date' is not offered until the parser can read a pay date from the
+# filed reports; a literal dd/mm/yyyy is accepted for a one-off re-date.
+DATE_RULES = ("month_end",)
 REQUIRED_CODES = ("wages_payable", "paye_payable", "er_nic_cost")
 OPTIONAL_CODES = ("pensions_payable", "er_pension_cost", "dividend_code",
                   "attachments_payable", "overpayment_code",
@@ -82,10 +84,10 @@ def validate(cfg, *, path="<mapping>"):
     mode = cfg.get("mode", "shadow")
     if mode not in MODES:
         problems.append(f"{path}: mode '{mode}' must be one of {MODES}")
-    rule = cfg.get("journal_date", "month_end")
-    if rule not in DATE_RULES:
-        problems.append(f"{path}: journal_date '{rule}' must be one of "
-                        f"{DATE_RULES}")
+    rule = str(cfg.get("journal_date", "month_end"))
+    if rule not in DATE_RULES and not re.match(r"^\d{2}/\d{2}/\d{4}$", rule):
+        problems.append(f"{path}: journal_date '{rule}' must be month_end or a "
+                        "one-off dd/mm/yyyy")
     freq = cfg.get("paye_frequency", "monthly")
     if freq not in FREQUENCIES:
         problems.append(f"{path}: paye_frequency '{freq}' must be one of "

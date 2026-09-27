@@ -46,7 +46,8 @@ def cross_check(p30, journal):
     if not p30 or p30.get("due_for_period") is None:
         return "missing", "no P30 figure available to cross-check"
     due = Decimal(str(round(p30["due_for_period"], 2)))
-    ours = journal.meta["paye_due"]
+    # the P30 prints what HMRC is actually owed, i.e. after any CIS set-off
+    ours = journal.meta.get("hmrc_due_net", journal.meta["paye_due"])
     if p30.get("span") == journal.period:
         if abs(due - ours) <= Decimal("0.005"):
             return "ties", f"P30 'Tax & NIC due for {journal.period}' {due} ties to the journal's PAYE control {ours}"

@@ -248,6 +248,17 @@ class BuilderEpsAndEdgeCases(unittest.TestCase):
         self.assertEqual(f"{j.meta['cis_suffered_eps']:.2f}", "1000.00")
         self.assertFalse(any("CIS" in l.description for l in j.lines))
 
+    def test_cis_client_p30_ties_to_net_figure(self):
+        from msx import p30 as p30_mod
+        pay = copy.deepcopy(self.pay)
+        pay["employer_totals"]["cis_suffered"] = 1000.0
+        pay["employer_totals"]["total_tax_nic_due"] = round(3311.93 - 1000.0, 2)
+        pay["employer_totals"]["hmrc_due_for_period"] = pay["employer_totals"]["total_tax_nic_due"]
+        pay["employer_totals"]["total_net_outlay"] = round(35915.43 - 1000.0, 2)
+        j = journal_builder.build(pay, self.cfg)
+        p30 = {"span": "Apr-2026", "due_for_period": 2311.93}
+        self.assertEqual(p30_mod.cross_check(p30, j)[0], "ties")
+
     def test_unexplained_eps_difference_holds(self):
         pay = copy.deepcopy(self.pay)
         pay["employer_totals"]["total_tax_nic_due"] = 3000.0

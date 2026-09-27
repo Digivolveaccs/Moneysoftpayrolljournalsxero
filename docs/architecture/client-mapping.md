@@ -29,7 +29,7 @@ written against every journal the pipeline posts.
 | `xero.org_name` | Exact organisation name in Xero (normalised match against the connected tenants); `xero.tenant_id` pins it (preferred once known) |
 | `xero.app` | Which configured Xero app holds this org's connection (`default` unless the practice runs several apps to stay under a connection cap) |
 | `mode` | `shadow` / `draft` / `post` |
-| `journal_date` | `month_end` (default; last day of the calendar month of the pay period) or `pay_date` (requires a pay date to be supplied). A literal `dd/mm/yyyy` is honoured for one-off re-dating |
+| `journal_date` | `month_end` (default; last day of the calendar month of the pay period). A literal `dd/mm/yyyy` is honoured for a one-off re-date (locked period); revert it afterwards. A pay-date rule is not offered until the parser can read the pay date from the filed reports |
 | `narration` | Template; must contain `{tag}` (`April 2026 (M1)`), `{month}` or `{period}` so each month is unique. Default `Payroll - {tag}` |
 | `tax_rate` | CSV tax rate name, default `No VAT` (API uses TaxType `NONE`) |
 | `show_on_cash_basis` | Xero's "show on cash basis reports" flag; default false (matches the CSV importer) |

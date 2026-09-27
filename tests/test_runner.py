@@ -224,11 +224,83 @@ class RunnerTests(unittest.TestCase):
         s = self.run_once()
         self.assertEqual(len(s["held"]), 2)
         self.assertTrue(runner.holds_changed(self.cfg.out_dir, s))
+        self.assertTrue(runner.holds_changed(self.cfg.out_dir, s))   # not yet sent
+        runner.mark_holds_reported(self.cfg.out_dir, s)
         self.assertFalse(runner.holds_changed(self.cfg.out_dir, s))
         self.assertEqual(runner.system_problems(s), [])
         s["held"].append({"client": "x", "period": "y", "stage": "bug",
                           "note": "boom"})
         self.assertEqual(len(runner.system_problems(s)), 1)
+
+    def test_failed_report_is_retried_and_flagged(self):
+        from msx import notify
+        with open(os.path.join(self.clients, "browns-garage-haywards-heath.json")) as fh:
+            cfg = json.load(fh)
+        del cfg["employees"]["Sally Jones"]
+        with open(os.path.join(self.clients, "browns-garage-haywards-heath.json"), "w") as fh:
+            json.dump(cfg, fh)
+        self.cfg.data["notify"] = {"missive_token_file": os.path.join(self.tmp.name, "nope"),
+                                   "report_to": "m@x", "heartbeat_file":
+                                   os.path.join(self.tmp.name, "hb.json")}
+        attempts = []
+        orig = notify.send_missive_report
+
+        def failing(*a, **k):
+            attempts.append(1)
+            return {"ok": False, "error": "missing token"}
+        notify.send_missive_report = failing
+        try:
+            s1 = runner.run_once(self.cfg, xero_factory=lambda a: self.xero,
+                                 log=self.logs.append, notify_enabled=True)
+            s2 = runner.run_once(self.cfg, xero_factory=lambda a: self.xero,
+                                 log=self.logs.append, notify_enabled=True)
+        finally:
+            notify.send_missive_report = orig
+        self.assertEqual(len(attempts), 2)                # retried, not silenced
+        self.assertTrue(any("could not be emailed" in p for p in s2["system_problems"]))
+        # once a send succeeds the standing hold stops being re-sent
+        notify.send_missive_report = lambda *a, **k: {"ok": True}
+        try:
+            runner.run_once(self.cfg, xero_factory=lambda a: self.xero,
+                            log=self.logs.append, notify_enabled=True)
+            s4 = runner.run_once(self.cfg, xero_factory=lambda a: self.xero,
+                                 log=self.logs.append, notify_enabled=True)
+        finally:
+            notify.send_missive_report = orig
+        self.assertNotIn("notify", s4)
+
+    def test_march_report_after_6_april_is_processed(self):
+        import datetime as _dt
+        folder = os.path.join(self.pdf_root,
+                              "Browns Garage (Haywards Heath) Limited 2026-27")
+        p = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                         " - Employer's Summary for Mar-2027.txt")
+        with open(os.path.join(FIX, "browns_apr2026_tabbed.txt")) as fh:
+            text = fh.read().replace("Apr-2026", "Mar-2027").replace("May-2026", "Apr-2027")
+        with open(p, "w") as fh:
+            fh.write(text)
+        os.utime(p, (1_600_000_000, 1_600_000_000))
+        s = self.run_once(clock=lambda: _dt.datetime(2027, 4, 10, 9, 0))
+        self.assertIn("Mar-2027", [e["period"] for e in s["shadow"]])
+        self.assertEqual(s["ignored"], [])
+        # genuinely old periods are still ignored, but visibly
+        s2 = self.run_once(clock=lambda: _dt.datetime(2028, 6, 1, 9, 0))
+        self.assertTrue(s2["ignored"])
+        self.assertTrue(any("ignored" in w for w in s2["warnings"]))
+
+    def test_misnamed_report_file_holds(self):
+        folder = os.path.join(self.pdf_root,
+                              "Browns Garage (Haywards Heath) Limited 2026-27")
+        src = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                           " - Employer's Summary for Apr-2026.txt")
+        dst = os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                           " - Employer's Summary for Jun-2026.txt")
+        shutil.copy(src, dst)
+        os.utime(dst, (1_600_000_000, 1_600_000_000))
+        s = self.run_once()
+        held = [h for h in s["held"] if h["period"] == "Jun-2026"]
+        self.assertEqual(len(held), 1)
+        self.assertIn("named for Jun-2026", held[0]["note"])
 
     def test_run_lock_refuses_second_run(self):
         from msx.errors import Hold

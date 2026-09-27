@@ -82,6 +82,18 @@ class OnboardTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 onboard.write_mapping(m, d)
 
+    def test_pensions_payable_account_is_not_taken_as_the_cost(self):
+        self.xero.chart["858"] = {"name": "Pensions Payable", "status": "ACTIVE",
+                                  "class": "LIABILITY", "system_account": None}
+        self.xero.full["J1"]["JournalLines"] = [
+            {"Description": "T Donohue", "AccountCode": "858", "LineAmount": -196.94},
+            {"Description": "T Donohue", "AccountCode": "6000", "LineAmount": 3333.33},
+        ]
+        m, _ = onboard.propose(self.pay, self.xero, onboard.stub_for(self.pay),
+                               today=datetime.date(2026, 5, 1))
+        self.assertEqual(m["codes"]["pensions_payable"], "858")
+        self.assertEqual(m["codes"]["er_pension_cost"], "TBC-employer-pension")
+
     def test_no_history_all_placeholders(self):
         self.xero.existing = []
         m, report = onboard.propose(self.pay, self.xero, onboard.stub_for(self.pay),

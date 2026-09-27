@@ -231,7 +231,7 @@ class PosterTests(unittest.TestCase):
         self.xero.chart["2200"]["class"] = "EXPENSE"
         with self.assertRaises(Hold) as cm:
             poster.post_journal(self.journal, self.map, self.ledger, self.xero)
-        self.assertIn("payable", str(cm.exception))
+        self.assertIn("credits net", str(cm.exception))
         self.xero.chart["2200"]["class"] = "LIABILITY"
         self.xero.chart["2200"]["name"] = "PAYE Payable"        # the Brandtek trap
         with self.assertRaises(Hold) as cm:
@@ -263,6 +263,37 @@ class PosterTests(unittest.TestCase):
         self.assertEqual(cm.exception.reason, "client-posts-own")
         self.assertEqual(self.xero.created, [])
         self.assertEqual(self.ledger.get("browns", "Apr-2026")["status"], "skipped")
+
+    def test_pay_date_journal_after_month_end_is_seen_by_duplicate_guard(self):
+        # tax month Apr-2026 runs 6 Apr - 5 May; a hand-posted wages journal
+        # dated on the 5 May pay date must still block a second April journal
+        self.xero.existing = [{"id": "HAND", "narration": "Wages April 2026",
+                               "status": "POSTED", "date": "2026-05-05"}]
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(cm.exception.stage, "duplicate")
+        self.assertEqual(self.xero.created, [])
+
+    def test_cost_code_on_a_liability_account_holds(self):
+        # 858 'Pensions Payable' used as the employer pension COST would net
+        # the employer cost against the payable and never reach the P&L
+        for code in self.xero.chart.values():
+            code.setdefault("class", "")
+        self.xero.chart["6001"]["class"] = "LIABILITY"
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertIn("uses it as a cost", str(cm.exception))
+        self.xero.chart["6001"]["class"] = "EXPENSE"
+        self.xero.chart["2210"]["class"] = "ASSET"
+        with self.assertRaises(Hold) as cm:
+            poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertIn("as a payable", str(cm.exception))
+        # a director's loan (liability or asset) may take net pay / dividend tax
+        self.xero.chart["2210"]["class"] = "LIABILITY"
+        self.xero.chart["836"]["class"] = "ASSET"
+        self.xero.chart["471"]["class"] = "EQUITY"
+        r = poster.post_journal(self.journal, self.map, self.ledger, self.xero)
+        self.assertEqual(r.outcome, "draft")
 
     def test_dry_run(self):
         r = poster.post_journal(self.journal, self.map, self.ledger, self.xero,

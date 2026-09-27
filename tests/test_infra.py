@@ -54,6 +54,13 @@ class MappingTests(unittest.TestCase):
         with self.assertRaises(Hold):
             mapping.Mapping(cfg).ensure_valid()
 
+    def test_pay_date_rule_not_offered_yet(self):
+        cfg = browns_cfg()
+        cfg["journal_date"] = "pay_date"
+        self.assertTrue(any("journal_date" in x for x in mapping.Mapping(cfg).problems))
+        cfg["journal_date"] = "01/05/2026"
+        self.assertEqual(mapping.Mapping(cfg).problems, [])
+
     def test_post_mode_needs_xero(self):
         cfg = browns_cfg()
         cfg["mode"] = "post"

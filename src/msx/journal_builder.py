@@ -589,6 +589,7 @@ def build(payroll, cfg, *, date_override=None, allow_placeholders=False):
         "dividends": sum((l.amount for l in div_lines), ZERO),
         "er_nic": er_nic_t, "paye_pre_ea": paye_pre_ea, "ea": ea,
         "paye_due": hmrc_movement,
+        "hmrc_due_net": hmrc_movement - cis_suff,
         "statutory_recovery": stat_rec, "ser_compensation": ser_comp,
         "cis_suffered_eps": cis_suff, "apprenticeship_levy": levy,
         "warnings": warnings,

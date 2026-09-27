@@ -46,10 +46,10 @@ KIND_PATTERNS = [
                             r"directors? pay", re.I)),
 ]
 
-ACCOUNT_NAME_HINTS = [
+ACCOUNT_NAME_HINTS = [                       # most specific first
     ("er_nic_cost", re.compile(r"employer.*(ni|nic|national insurance)", re.I)),
+    ("pensions_payable", re.compile(r"pension.*(payable|liab|control)", re.I)),
     ("er_pension_cost", re.compile(r"pension", re.I)),
-    ("pensions_payable", re.compile(r"pension.*(payable|liab)", re.I)),
     ("paye_payable", re.compile(r"paye|hmrc", re.I)),
     ("wages_payable", re.compile(r"wages? payable|payroll", re.I)),
     ("dividend_code", re.compile(r"dividend", re.I)),
@@ -98,10 +98,21 @@ def classify_line(line, accounts, employees):
             kind = "pay_code"
         elif kind is None and cls == "LIABILITY" and amt < 0:
             kind = "wages_payable" if who else "paye_payable"
-    # sign sanity: costs are debits, payables credits
+    # sign sanity: costs are debits, payables credits; and a "cost" on a
+    # liability account (or a payable on an expense account) is not evidence
+    acct_cls = ((accounts.get(code) or {}).get("class") or "").upper()
     if kind in ("wages_payable", "paye_payable", "pensions_payable",
                 "attachments_payable", "dividend_tax_code") and amt > 0 \
             and "allowance" not in desc.lower():
+        kind = None
+    if kind in ("pay_code", "er_nic_cost", "er_pension_cost") and amt < 0 \
+            and "allowance" not in desc.lower():
+        kind = None
+    if kind in ("er_nic_cost", "er_pension_cost", "pay_code") \
+            and acct_cls in ("LIABILITY", "ASSET", "REVENUE"):
+        kind = None
+    if kind in ("paye_payable", "pensions_payable", "attachments_payable") \
+            and acct_cls in ("EXPENSE", "REVENUE"):
         kind = None
     return {"code": code, "kind": kind, "employee": who, "amount": amt,
             "description": desc}

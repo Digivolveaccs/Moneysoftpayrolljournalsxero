@@ -103,8 +103,9 @@ def check_lock_dates(org, journal):
                                 f"org's {label} {lock}")
     if problems:
         raise Hold(f"{org.get('name')}: " + "; ".join(problems)
-                   + " - unlock the period in Xero or re-date the journal "
-                   "(--date) and note the true period in the narration",
+                   + " - unlock the period in Xero, or set journal_date to "
+                   "the first open day (dd/mm/yyyy) in the client mapping "
+                   "for this month and revert it afterwards",
                    stage="lock")
 
 
@@ -142,12 +143,31 @@ def check_accounts(accounts, journal, org_name, expect_names=None):
                             f"{sys_acc} - Xero rejects manual journals to it")
         cls = (a.get("class") or "").upper()
         kinds = by_code[code]
-        if kinds & LIABILITY_KINDS and cls in ("EXPENSE", "REVENUE"):
-            problems.append(f"code {code} ({name}) is a {cls} account but the "
-                            f"mapping uses it as a payable ({', '.join(sorted(kinds))})")
-        if kinds & COST_KINDS and cls == "REVENUE":
-            problems.append(f"code {code} ({name}) is a REVENUE account but "
-                            f"the mapping uses it as a cost ({', '.join(sorted(kinds))})")
+        if cls:
+            # payables owed to HMRC / providers / courts must be liabilities;
+            # net wages, dividend tax and loan repayments may also go to a
+            # director's loan or employee loan account (liability or asset)
+            strict_liab = kinds & {"paye", "pension_payable", "attachments",
+                                   "ea_paye", "stat_rec_paye", "ser_paye"}
+            loose_liab = kinds & (LIABILITY_KINDS - {"paye", "pension_payable",
+                                                     "attachments", "ea_paye",
+                                                     "stat_rec_paye", "ser_paye"})
+            if strict_liab and cls != "LIABILITY":
+                problems.append(f"code {code} ({name}) is a {cls} account but "
+                                f"the mapping uses it as a payable "
+                                f"({', '.join(sorted(strict_liab))})")
+            if loose_liab and cls not in ("LIABILITY", "ASSET"):
+                problems.append(f"code {code} ({name}) is a {cls} account but "
+                                f"the mapping credits {', '.join(sorted(loose_liab))} "
+                                "to it")
+            costs = kinds & (COST_KINDS - {"dividend"})
+            if costs and cls != "EXPENSE":
+                problems.append(f"code {code} ({name}) is a {cls} account but "
+                                f"the mapping uses it as a cost "
+                                f"({', '.join(sorted(costs))})")
+            if "dividend" in kinds and cls not in ("EXPENSE", "EQUITY"):
+                problems.append(f"code {code} ({name}) is a {cls} account but "
+                                "the mapping debits dividends to it")
         low = name.lower()
         for kind, bad_words in NAME_CONFLICTS.items():
             if kind in kinds and any(w in low for w in bad_words):
@@ -194,10 +214,13 @@ def _date_of(value):
     return _xero_date(value)
 
 
-def month_window(period):
+def month_window(period, tail_days=10):
+    """Calendar month of the period plus a tail into the next month: a
+    wages journal for tax month 'Apr-2026' (6 Apr-5 May) may legitimately be
+    dated on a pay date up to the 5th of May, and must still be seen."""
     _, _, month_end, end = period_parts(period)
     start = end.replace(day=1)
-    return start.isoformat(), end.isoformat()
+    return start.isoformat(), (end + datetime.timedelta(days=tail_days)).isoformat()
 
 
 def duplicate_guard(xero, tenant_id, journal, ledger_row):
