@@ -12,6 +12,19 @@
   "settle_seconds": 30,
   "stability_sample_seconds": 1.0,
   "xero": {
+    "backend": "engine",
+    "engine": {
+      "_comment": "The practice's own Xero app (Digivolve Practice API, Azure Function App digivolve-xero) holds the Xero token for every client org. This machine only holds an Entra app secret and the route's function key, entered once with `msx auth login`.",
+      "base_url": "https://digivolve-xero.azurewebsites.net",
+      "credential_store": "keychain",
+      "credential_file": "~/.config/msx/engine-credentials.json",
+      "entra": {
+        "tenant_id": "8045aa65-4db7-474b-9762-22a9bef0ee2a",
+        "client_id": "PUT-THE-PAYROLL-AGENT-CLIENT-APP-ID-HERE",
+        "scope": "api://PUT-THE-FUNCTION-APP-EASY-AUTH-CLIENT-ID-HERE/.default"
+      }
+    },
+    "_direct_comment": "Everything below is only used when backend is 'direct' (a PKCE app and a Xero token on this machine).",
     "client_id": "PUT-THE-PKCE-APP-CLIENT-ID-HERE",
     "redirect_uri": "http://localhost:8400/callback",
     "token_store": "keychain",

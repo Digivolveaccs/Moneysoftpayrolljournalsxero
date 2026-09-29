@@ -24,11 +24,15 @@ from . import config as config_mod
 from . import journal_builder, mapping as mapping_mod, poster, runner, state
 from . import summary_parser
 from . import xero_client
+from . import engine
 from .errors import Hold, Skip
 
 
 def make_xero_factory(cfg):
     def factory(app_name):
+        if cfg.backend == "engine":
+            # one credential serves every client; app names are irrelevant
+            return engine.client_from_config(cfg, log=lambda m: print("  xero:", m))
         app = cfg.xero_app(app_name)
         if app.get("token_store") == "keychain":
             store = xero_client.KeychainTokenStore(
@@ -224,7 +228,10 @@ def cmd_auth(args):
         print(f"connected {len(tenants)} organisation(s):")
         for t in tenants:
             print(f"  {t['tenant_id']}  {t['name']}")
-        if len(tenants) >= 25:
+        if cfg.backend == "engine":
+            print("(orgs are connected to the engine at "
+                  f"{cfg.xero['engine']['base_url']}/api/connect, not here)")
+        elif len(tenants) >= 25:
             print("NOTE: this app is at Xero's 25-tenant limit for uncertified "
                   "apps; register another app for further clients "
                   "(xero.apps.<name>) or certify the app.")
@@ -236,9 +243,13 @@ def cmd_auth(args):
         try:
             ts = xero.tenants()
             st = xero.token_status()
-            print(f"ok - token valid, {len(ts)} organisation(s) connected; "
-                  f"refresh token expires in {st.get('refresh_expires_in_days')} "
-                  "days if unused")
+            if cfg.backend == "engine":
+                print(f"ok - engine {st.get('engine')} reachable, "
+                      f"{len(ts)} organisation(s) connected to it")
+            else:
+                print(f"ok - token valid, {len(ts)} organisation(s) connected; "
+                      f"refresh token expires in {st.get('refresh_expires_in_days')} "
+                      "days if unused")
         except xero_client.AuthRequired as exc:
             print("AUTH REQUIRED:", exc)
             return 3
@@ -381,11 +392,23 @@ def cmd_doctor(args):
     except Hold as exc:
         print("MAPPINGS:", exc)
         problems.append("mappings")
-    for app_name in sorted(set(["default"] + list((cfg.xero.get("apps") or {}).keys()))):
+    try:
+        backend = cfg.backend
+    except Hold as exc:
+        print("CONFIG:", exc)
+        backend = None
+        problems.append("xero-backend")
+    apps = ["engine"] if backend == "engine" else sorted(
+        set(["default"] + list((cfg.xero.get("apps") or {}).keys())))
+    for app_name in apps if backend else []:
         try:
             xero = make_xero_factory(cfg)(app_name)
             ts = xero.tenants()
             st = xero.token_status()
+            if backend == "engine":
+                print(f"xero engine {st.get('engine')}: reachable, "
+                      f"{len(ts)} org(s) connected to the practice app")
+                continue
             days = st.get("refresh_expires_in_days")
             flag = " - WARNING: re-authorise soon" if days is not None and days < 7 else ""
             print(f"xero app {app_name}: token ok, {len(ts)} org(s) connected, "

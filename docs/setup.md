@@ -17,23 +17,46 @@ posts unless told to. Everything below is done once, with a human present.
 - `~/.config/msx` must be OUTSIDE every synced folder (it holds the ledger and
   the token file if Keychain is not used).
 
-## 2. Register the Xero app (once per practice)
+## 2. Xero access: the practice's own app on Azure (recommended)
 
-1. developer.xero.com > My Apps > New app. Integration type: **Mobile or
-   desktop app** (this is the **Auth Code with PKCE** grant - no client secret).
-   Redirect URI: `http://localhost:8400/callback`. Company URL: the practice site.
-2. Copy the **Client ID** into `~/.config/msx/config.json` (`xero.client_id`).
-3. Connection caps: since March 2026 Xero's Starter tier allows **5**
-   connected organisations and Core **50**; Xero says bespoke integrations a
-   practice builds for its own clients are exempt from the new pricing, but
-   the mechanism is not documented (see `docs/research/03`). **Before
-   connecting more than five orgs, ask Xero** (developer support / partner
-   manager) how the practice exemption is applied to this app and whether it
-   lifts the cap. Until answered, register further PKCE apps as needed
-   (`xero.apps.<name>`) - each mapping names the app that holds its org.
-4. Scopes are requested by `msx`, not configured in the portal:
-   `offline_access accounting.manualjournals accounting.manualjournals.read
-   accounting.settings.read`.
+The practice already runs a Xero app - **Digivolve Practice API**, Azure
+Function App `digivolve-xero`, repo `Digivolveaccs/digivolve-xero-api`. Xero
+approved it as an internal-use app (19 Aug 2026: exempt from app pricing,
+connection cap 500) and about 480 client organisations are connected to it.
+`msx` uses it as its Xero backend (`xero.backend: "engine"`), so this Mac
+never holds a Xero token, never logs in to Xero, has no connection cap and
+nothing to keep alive. Every gate the pipeline runs (lock dates, account
+classes, duplicate guard, read-back, recon, onboarding) runs unchanged
+through the app's scoped pass-through (`/api/msx/xero/...`, allow-listed
+calls only, two credentials required).
+
+One-off, in the Azure repo: merge the `msx pass-through` change (the files in
+`deploy/engine-passthrough/` here, or the branch if it was pushed) to `main`;
+it deploys itself. Then, in the portal (5 minutes, `SETUP-MATT.md` section 9
+there):
+
+1. **Payroll Agent Client** (Entra app registration): create a client
+   secret; note its Application (client) ID -> `xero.engine.entra.client_id`.
+2. **Easy Auth app id**: Function App -> Authentication -> Microsoft provider
+   -> App (client) ID -> `xero.engine.entra.scope` = `api://<that id>/.default`.
+   Its allowed client applications must include the Payroll Agent Client.
+3. **Function key**: Function App -> App keys -> add one named `msx`.
+
+On the Mac, `msx auth login` asks for the function key and the client secret
+(hidden input, Keychain) and lists the organisations the app can see. A
+client whose organisation is not yet connected is connected at
+`https://digivolve-xero.azurewebsites.net/api/connect` (practice login).
+
+### Alternative: a PKCE app on this Mac (`xero.backend: "direct"`)
+
+Only if the practice app is unavailable. developer.xero.com > New app,
+**Mobile or desktop app** (Auth Code with PKCE, no secret), redirect URI
+`http://localhost:8400/callback`; `xero.client_id` in the config;
+`msx auth login` opens the browser. Connection caps apply (Starter 5, Core
+50, exemption by request to api@xero.com); further apps go under
+`xero.apps.<name>`. Scopes are requested by `msx`: `offline_access
+accounting.manualjournals accounting.manualjournals.read
+accounting.settings.read`.
 
 ## 3. Config
 
@@ -44,7 +67,8 @@ cp ~/Moneysoftpayrolljournalsxero/config.example.json ~/.config/msx/config.json
 
 Edit it: `machine_name`, `role` (`primary` on this one machine, `standby`
 on any other), `pdf_root` (the Dropbox PDF attachments folder on THIS Mac),
-`clients_dir` (the repo's `clients/`), `xero.client_id`,
+`clients_dir` (the repo's `clients/`), the `xero.engine.entra` ids from
+section 2 (or `xero.client_id` for a direct app),
 `notify.report_to`, `notify.missive_token_file` (a Missive API token in a
 file, `chmod 600`, created in Missive > Settings > API by a user who can send
 from the payroll address), and optionally `notify.heartbeat_url` (a
@@ -55,8 +79,12 @@ healthchecks.io-style check URL; the run pings `/start`, `/`, `/fail`).
 ## 4. Connect the client organisations
 
 ```
-bin/msx auth login            # opens the browser; sign in as the practice user
+bin/msx auth login            # engine: paste the two secrets; direct: opens the browser
 ```
+
+With the engine backend the organisations are already connected to the
+practice app (about 480 of them); `msx auth tenants` lists them. Connect a
+missing one at `https://digivolve-xero.azurewebsites.net/api/connect`.
 
 The consent screen lists the organisations that login can access; pick one
 per flow (Xero only offers multi-select to certified apps). Repeat

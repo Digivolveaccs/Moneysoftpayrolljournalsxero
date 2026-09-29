@@ -113,9 +113,14 @@ class KeychainTokenStore:
         self.service, self.account = service, account
 
     def load(self):
-        r = subprocess.run(["security", "find-generic-password", "-s",
-                            self.service, "-a", self.account, "-w"],
-                           capture_output=True, text=True)
+        try:
+            r = subprocess.run(["security", "find-generic-password", "-s",
+                                self.service, "-a", self.account, "-w"],
+                               capture_output=True, text=True)
+        except FileNotFoundError:
+            raise AuthRequired("the macOS Keychain tool (security) is not on "
+                               "this machine - set the store to 'file' in the "
+                               "config, or run this on the Mac")
         if r.returncode != 0:
             return None
         try:
@@ -125,9 +130,14 @@ class KeychainTokenStore:
 
     def save(self, tokens):
         blob = base64.b64encode(json.dumps(tokens).encode()).decode()
-        subprocess.run(["security", "add-generic-password", "-U", "-s",
-                        self.service, "-a", self.account, "-w", blob],
-                       check=True, capture_output=True)
+        try:
+            subprocess.run(["security", "add-generic-password", "-U", "-s",
+                            self.service, "-a", self.account, "-w", blob],
+                           check=True, capture_output=True)
+        except FileNotFoundError:
+            raise AuthRequired("the macOS Keychain tool (security) is not on "
+                               "this machine - set the store to 'file' in the "
+                               "config, or run this on the Mac")
 
     def clear(self):
         subprocess.run(["security", "delete-generic-password", "-s",

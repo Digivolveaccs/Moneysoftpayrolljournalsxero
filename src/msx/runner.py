@@ -413,6 +413,8 @@ def keepalive(cfg, ledger, xero_factory, summary, log, every_days=7):
     """Touch each Xero app's token at least weekly so the rotating refresh
     token never reaches Xero's 60-day unused expiry. A failure here is a
     warning, never a stop, and never disables anything."""
+    if cfg.backend == "engine":
+        return                              # no rotating Xero token here
     apps = sorted(set(["default"] + list((cfg.xero.get("apps") or {}).keys())))
     cutoff = (datetime.datetime.now(datetime.timezone.utc)
               - datetime.timedelta(days=every_days)).isoformat()

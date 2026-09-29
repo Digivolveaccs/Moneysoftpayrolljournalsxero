@@ -34,11 +34,23 @@ Moneysoft (Windows VM)  --payroll-agent files PDFs-->  Dropbox "PDF attachments"
 
 ## Quick start
 
+Xero access comes from the practice's own Xero app on Azure (Digivolve
+Practice API, ~480 client orgs already connected, no token on the Mac); see
+`docs/setup.md` section 2 for the three ids it needs.
+
+One command on the payroll Mac (clone, poppler, config, launchd jobs, doctor):
+
+```
+curl -fsSL https://raw.githubusercontent.com/Digivolveaccs/Moneysoftpayrolljournalsxero/claude/gallant-ritchie-czpla6/deploy/install.sh | bash -s -- <PAYROLL_AGENT_CLIENT_APP_ID> <EASY_AUTH_APP_ID>
+```
+
+or by hand:
+
 ```
 brew install poppler
-cp config.example.json ~/.config/msx/config.json    # edit paths + Xero client id
+cp config.example.json ~/.config/msx/config.json    # edit paths + the Entra ids
 bin/msx doctor
-bin/msx auth login                                   # human signs in, picks an org
+bin/msx auth login                                   # human pastes the two secrets
 bin/msx onboard "<Client> - Employer's Summary for Aug-2026.pdf"
 bin/msx run --dry-run
 bin/msx run

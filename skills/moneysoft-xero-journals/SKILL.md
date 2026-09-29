@@ -27,8 +27,11 @@ Command: `~/Moneysoftpayrolljournalsxero/bin/msx ...`. Read
 3. **Never post by hand for a client in draft or post mode.** The ledger and
    the Xero duplicate guard exist so that a journal is created exactly once.
    If you think one is missing, run `msx recon` and read the finding.
-4. **Never enter Xero credentials.** `msx auth login` opens a browser; a
-   human signs in. Missive token, Xero token: never typed by you.
+4. **Never enter credentials.** Xero is reached through the practice's own
+   app on Azure (Digivolve Practice API); `msx auth login` asks a human for
+   the function key and the Entra client secret, hidden input, once. A
+   direct-backend install opens a browser for a human to sign in. Missive
+   token, Xero token, Entra secret: never typed by you.
 
 ## Commands you will use
 
@@ -75,11 +78,12 @@ fixed the next `msx run` clears them automatically.
 
 ## Onboarding a client (once per client, ~3 minutes)
 
-1. Make sure the practice login has connected the client's org:
-   `msx auth tenants` lists what is connected. If missing: `msx auth login`
-   (human signs in, picks the org). Each uncertified Xero app has a
-   connection cap; when `auth login` says the app is full, add a second app
-   in `~/.config/msx/config.json` under `xero.apps` and use `--app`.
+1. Make sure the client's org is connected to the practice app:
+   `msx auth tenants` lists what is connected (about 480 orgs). If missing,
+   a human connects it at `https://digivolve-xero.azurewebsites.net/api/connect`
+   (practice login, pick the org); the cap is 500 and Xero raises it on
+   request to api@xero.com. (Direct backend only: `msx auth login` per app,
+   25-org cap per uncertified app, extra apps under `xero.apps`.)
 2. `msx onboard "<Client> - Employer's Summary for <Mon-YYYY>.pdf"` (all
    layouts). It reads the client's last wages journals in Xero and writes
    `clients/<slug>.json` in `shadow` mode with the codes it could prove and

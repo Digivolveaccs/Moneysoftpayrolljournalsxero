@@ -127,6 +127,16 @@ old; Xero's duplicate check remains the arbiter of last resort.
 | 8 | Xero outage mid-run | no | retry with backoff; circuit breaker after 3 -> remaining `pending`, same key next run |
 | 9 | Payroll re-run after posting | yes | payload SHA compared on every run; HOLD with both totals |
 | 10 | Connection cap reached | no | several PKCE apps (`xero.apps`), per-mapping `xero.app`; `auth login` warns at the cap |
+
+**Xero backend (added 29 Sep 2026).** The practice already runs a Xero app on
+Azure - *Digivolve Practice API*, Function App `digivolve-xero`, approved by
+Xero as an internal-use app (pricing exemption, cap 500) with about 480
+client organisations connected. `msx` uses it as its default backend
+(`xero.backend: "engine"`, `src/msx/engine.py`): the Mac holds no Xero token,
+so rows 6 and 10 above disappear, and the app's scoped pass-through
+(`/api/msx/xero/...`, allow-listed calls, Easy Auth principal + function key;
+`deploy/engine-passthrough/`) lets every gate in this document run unchanged.
+The PKCE design remains as `xero.backend: "direct"`.
 | 11 | New starter / leaver / pension join | no | HOLD once for a starter; line counts are data-driven |
 | 12 | Two machines both posting | yes | `role: standby` shadow-only; take-over rule; Xero GET arbiter |
 | 13 | Report layout missing (Additions/Deductions) | no | builder HOLDs naming the layout; vm/README specifies the export |

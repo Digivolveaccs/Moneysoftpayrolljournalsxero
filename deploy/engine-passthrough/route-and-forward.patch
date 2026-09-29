@@ -1,0 +1,102 @@
+--- a/shared/xero.py
++++ b/shared/xero.py
+@@ -75,6 +75,33 @@
+     def connections(self):
+         return self._request("GET", CONNECTIONS)
+ 
++    def forward(self, method, path, tenant_id=None, params=None, body=None,
++                idempotency_key=None):
++        """One call, Xero's answer returned verbatim: (status, headers, text).
++
++        For the msx pass-through: the caller owns retry, 429 back-off and
++        error text, so nothing is raised on 4xx/5xx and nothing is retried
++        here beyond one token refresh on 401. Paced per tenant like every
++        other call so the shared quota is respected.
++        """
++        url = CONNECTIONS if path == "connections" else API + path
++        refreshed = False
++        while True:
++            if tenant_id:
++                self._pace(tenant_id)
++            headers = {"Authorization": f"Bearer {self.tokens.get_access_token()}",
++                       "Accept": "application/json"}
++            if tenant_id:
++                headers["Xero-tenant-id"] = tenant_id
++            if idempotency_key:
++                headers["Idempotency-Key"] = idempotency_key
++            r = requests.request(method, url, headers=headers, params=params,
++                                 timeout=60, **({"json": body} if body is not None else {}))
++            if r.status_code == 401 and not refreshed:
++                refreshed = True
++                continue
++            return r.status_code, dict(r.headers), r.text
++
+     def get(self, tenant_id, path, params=None, if_modified_since=None):
+         return self._request("GET", API + path, tenant_id, params, if_modified_since)
+ 
+--- a/function_app.py
++++ b/function_app.py
+@@ -10,7 +10,8 @@
+ from azure.identity import DefaultAzureCredential
+ from azure.keyvault.secrets import SecretClient
+ 
+-from shared import azstore, backfill, cache, cashflow_feed, journals, online_invoices, registry, sync
++from shared import (azstore, backfill, cache, cashflow_feed, journals, msx_proxy, online_invoices,
++                    registry, sync)
+ from shared.config import SCOPES, load_config
+ from shared.sharepoint import Graph
+ from shared.threer import pipeline as threer
+@@ -178,6 +179,53 @@
+                              mimetype="application/json")
+ 
+ 
++@app.route(route="msx/xero/{*path}", methods=["GET", "PUT", "POST"],
++           auth_level=func.AuthLevel.FUNCTION)
++def msx_xero(req: func.HttpRequest) -> func.HttpResponse:
++    """Scoped Xero pass-through for the payroll journal pipeline (msx).
++
++    Two locks before anything is forwarded: Easy Auth must have admitted the
++    Payroll Agent Client app (same check as /api/post-journal) and the
++    function key must match. Then shared.msx_proxy decides whether the call
++    is on the allow-list; Xero's answer comes back verbatim.
++    """
++    c = Clients()
++    if principal_app_id(req.headers) != c.cfg.payroll_agent_app_id:
++        return func.HttpResponse(json.dumps({"Title": "Forbidden",
++                                             "Detail": "unauthorised client"}),
++                                 status_code=403, mimetype="application/json")
++    body = None
++    if req.method in ("PUT", "POST"):
++        try:
++            body = req.get_json()
++        except ValueError:
++            return func.HttpResponse(json.dumps({"Title": "Bad Request",
++                                                 "Detail": "body is not JSON"}),
++                                     status_code=400, mimetype="application/json")
++    tenant = (req.headers.get("Xero-Tenant-Id") or req.headers.get("xero-tenant-id")
++              or "").strip()
++
++    def org_lookup(tid):
++        try:
++            return registry.get_org(c.tables["orgs"], tid)
++        except Exception:
++            return None
++
++    try:
++        path, params = msx_proxy.decide(req.method, req.route_params.get("path", ""),
++                                        dict(req.params), tenant, body, org_lookup)
++    except msx_proxy.Refusal as r:
++        return func.HttpResponse(json.dumps({"Title": "Refused by the msx pass-through",
++                                             "Detail": r.reason}),
++                                 status_code=r.status, mimetype="application/json")
++    status, headers, text = c.xero.forward(
++        req.method, path, tenant_id=tenant or None, params=params, body=body,
++        idempotency_key=req.headers.get("Idempotency-Key"))
++    out = {k: v for k, v in headers.items() if k in msx_proxy.PASS_HEADERS}
++    return func.HttpResponse(text, status_code=status, headers=out,
++                             mimetype="application/json")
++
++
+ @app.timer_trigger(schedule="0 0 2 * * *", arg_name="timer")
+ def nightly_dispatch(timer: func.TimerRequest) -> None:
+     c = Clients()

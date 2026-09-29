@@ -106,6 +106,17 @@ class Config:
         return self.data.get("xero") or {}
 
     @property
+    def backend(self):
+        """'direct' (a PKCE app and a Xero token on this machine) or
+        'engine' (the practice's Digivolve Practice API on Azure holds the
+        Xero token; this machine only holds an Entra app secret)."""
+        b = str(self.xero.get("backend") or "direct").lower()
+        if b not in ("direct", "engine"):
+            raise Hold(f"xero.backend must be 'direct' or 'engine', not {b!r}",
+                       stage="config")
+        return b
+
+    @property
     def notify(self):
         return self.data.get("notify") or {}
 
