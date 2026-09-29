@@ -20,8 +20,8 @@
       "credential_file": "~/.config/msx/engine-credentials.json",
       "entra": {
         "tenant_id": "8045aa65-4db7-474b-9762-22a9bef0ee2a",
-        "client_id": "PUT-THE-PAYROLL-AGENT-CLIENT-APP-ID-HERE",
-        "scope": "api://PUT-THE-FUNCTION-APP-EASY-AUTH-CLIENT-ID-HERE/.default"
+        "client_id": "3d4ab954-97e1-4ca7-8be5-0d810da7e8bd",
+        "scope": "api://9d1971d9-8a51-4b76-815d-eb0ce04939c2/.default"
       }
     },
     "_direct_comment": "Everything below is only used when backend is 'direct' (a PKCE app and a Xero token on this machine).",

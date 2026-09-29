@@ -36,12 +36,12 @@ Moneysoft (Windows VM)  --payroll-agent files PDFs-->  Dropbox "PDF attachments"
 
 Xero access comes from the practice's own Xero app on Azure (Digivolve
 Practice API, ~480 client orgs already connected, no token on the Mac); see
-`docs/setup.md` section 2 for the three ids it needs.
+`docs/setup.md` section 2; the ids are already in the config).
 
 One command on the payroll Mac (clone, poppler, config, launchd jobs, doctor):
 
 ```
-curl -fsSL https://raw.githubusercontent.com/Digivolveaccs/Moneysoftpayrolljournalsxero/claude/gallant-ritchie-czpla6/deploy/install.sh | bash -s -- <PAYROLL_AGENT_CLIENT_APP_ID> <EASY_AUTH_APP_ID>
+curl -fsSL https://raw.githubusercontent.com/Digivolveaccs/Moneysoftpayrolljournalsxero/claude/gallant-ritchie-czpla6/deploy/install.sh | bash
 ```
 
 or by hand:

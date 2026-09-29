@@ -35,12 +35,17 @@ One-off, in the Azure repo: merge the `msx pass-through` change (the files in
 it deploys itself. Then, in the portal (5 minutes, `SETUP-MATT.md` section 9
 there):
 
-1. **Payroll Agent Client** (Entra app registration): create a client
-   secret; note its Application (client) ID -> `xero.engine.entra.client_id`.
-2. **Easy Auth app id**: Function App -> Authentication -> Microsoft provider
-   -> App (client) ID -> `xero.engine.entra.scope` = `api://<that id>/.default`.
-   Its allowed client applications must include the Payroll Agent Client.
-3. **Function key**: Function App -> App keys -> add one named `msx`.
+1. **Payroll Agent Client** (Entra app registration
+   `3d4ab954-97e1-4ca7-8be5-0d810da7e8bd`, already in the example config):
+   create a client secret.
+2. **Easy Auth app id** `9d1971d9-8a51-4b76-815d-eb0ce04939c2` (already in the
+   example config as `api://.../.default`; verified 29 Sep 2026 that its
+   allowed client applications include the Payroll Agent Client). Nothing to do.
+3. **Function key**: Function App -> App keys -> copy `default`, or add one
+   named `msx`.
+
+The Azure repo's `msx setup info` workflow (Actions -> run) re-reads these
+ids and checks the deployed route answers 401 unauthenticated.
 
 On the Mac, `msx auth login` asks for the function key and the client secret
 (hidden input, Keychain) and lists the organisations the app can see. A

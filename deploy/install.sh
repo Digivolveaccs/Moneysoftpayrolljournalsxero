@@ -1,14 +1,14 @@
 #!/bin/bash
 # One-command install of msx on the payroll Mac.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Digivolveaccs/Moneysoftpayrolljournalsxero/claude/gallant-ritchie-czpla6/deploy/install.sh | bash -s -- <PAYROLL_AGENT_CLIENT_APP_ID> <EASY_AUTH_APP_ID>
-#   (or, from a clone:  bash deploy/install.sh <PAYROLL_AGENT_CLIENT_APP_ID> <EASY_AUTH_APP_ID>)
+#   curl -fsSL https://raw.githubusercontent.com/Digivolveaccs/Moneysoftpayrolljournalsxero/claude/gallant-ritchie-czpla6/deploy/install.sh | bash
+#   (or, from a clone:  bash deploy/install.sh)
 #
 # Xero is reached through the practice's own app on Azure (Digivolve Practice
-# API, Function App digivolve-xero): the two ids are the Entra "Payroll Agent
-# Client" app registration and the Function App's Easy Auth app (see
-# docs/setup.md section 2). Pass "--direct <XERO_PKCE_CLIENT_ID>" instead to
-# use a PKCE app on this Mac.
+# API, Function App digivolve-xero). The two Entra ids it needs (the "Payroll
+# Agent Client" app registration and the Function App's Easy Auth app) are
+# already in config.example.json; pass them as $1 and $2 only to override.
+# Pass "--direct <XERO_PKCE_CLIENT_ID>" instead to use a PKCE app on this Mac.
 #
 # What it does (idempotent, safe to re-run):
 #   1. clones/updates the repo into ~/Moneysoftpayrolljournalsxero
