@@ -137,6 +137,16 @@ so rows 6 and 10 above disappear, and the app's scoped pass-through
 (`/api/msx/xero/...`, allow-listed calls, Easy Auth principal + function key;
 `deploy/engine-passthrough/`) lets every gate in this document run unchanged.
 The PKCE design remains as `xero.backend: "direct"`.
+
+**Auto-onboarding (29 Sep 2026).** A report with no mapping no longer waits
+for `msx onboard`: `runner.auto_onboard` proposes the mapping from the
+client's own wages journals in Xero during the run (`onboard.propose`, the
+same never-guess rules), writes `clients/<slug>.json`, and continues. Every
+code proven -> `auto_onboard.mode_when_complete` (default `draft`, a DRAFT
+journal to approve in Xero); any placeholder -> `shadow` and a `mapping`
+hold naming it. A report whose header disagrees with its folder name, an org
+that cannot be matched, or a slug that already exists all fall back to the
+plain hold. Dry runs never write a mapping.
 | 11 | New starter / leaver / pension join | no | HOLD once for a starter; line counts are data-driven |
 | 12 | Two machines both posting | yes | `role: standby` shadow-only; take-over rule; Xero GET arbiter |
 | 13 | Report layout missing (Additions/Deductions) | no | builder HOLDs naming the layout; vm/README specifies the export |

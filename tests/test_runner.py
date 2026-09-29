@@ -482,3 +482,126 @@ class ReviewRoundTwoRunnerTests(RunnerTests):
         finally:
             sp.parse_files = orig
         self.assertEqual(calls, [])
+
+
+class AutoOnboardTests(unittest.TestCase):
+    """A report from a client with no mapping maps itself from Xero."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = self.tmp.name
+        self.pdf_root = os.path.join(root, "PDF attachments")
+        folder = os.path.join(self.pdf_root,
+                              "Browns Garage (Haywards Heath) Limited 2026-27")
+        os.makedirs(folder)
+        shutil.copy(os.path.join(FIX, "browns_apr2026_tabbed.txt"),
+                    os.path.join(folder, "Browns Garage (Haywards Heath) Limited"
+                                 " - Employer's Summary for Apr-2026.txt"))
+        old = 1_600_000_000
+        for n in os.listdir(folder):
+            os.utime(os.path.join(folder, n), (old, old))
+        self.clients = os.path.join(root, "clients")
+        os.makedirs(self.clients)                      # no mapping at all
+        self.cfg = config_mod.Config({
+            "pdf_root": self.pdf_root, "clients_dir": self.clients,
+            "state_db": os.path.join(root, "state.sqlite"),
+            "out_dir": os.path.join(root, "out"),
+            "ledger_csv": os.path.join(root, "ledger.csv"),
+            "settle_seconds": 0, "stability_sample_seconds": 0,
+            "machine_name": "test-mac", "notify": {}}, path="test")
+        self.xero = FakeXero()
+        self.xero.tenant_list = [{"tenant_id": "T1", "type": "ORGANISATION",
+                                  "name": "Browns Garage (Haywards Heath) Limited"}]
+        self.xero.org["period_lock_date"] = None
+        for code, name, cls in (("230", "Directors Remuneration", "EXPENSE"),
+                                ("381", "Salaries", "EXPENSE"),
+                                ("6000", "Productive Labour", "EXPENSE"),
+                                ("471", "Dividends", "EQUITY"),
+                                ("2200", "Wages Payable", "LIABILITY"),
+                                ("2210", "PAYE Payable", "LIABILITY"),
+                                ("2211", "Pensions Payable", "LIABILITY"),
+                                ("6002", "Employers NIC", "EXPENSE"),
+                                ("6001", "Pensions", "EXPENSE"),
+                                ("836", "Directors Loan - Rob", "LIABILITY"),
+                                ("837", "Directors Loan - Darren", "LIABILITY")):
+            self.xero.chart[code] = {"name": name, "status": "ACTIVE",
+                                     "class": cls, "system_account": None}
+        self.xero.existing = [{"id": "J1", "narration": "Payroll - March 2026 (M12)",
+                               "status": "POSTED", "date": "2026-03-31"}]
+        self.lines = [
+            {"Description": "Gross pay - Chris Jones - March 2026 (M12)", "AccountCode": "230", "LineAmount": 788.0},
+            {"Description": "Gross pay - Sally Jones - March 2026 (M12)", "AccountCode": "381", "LineAmount": 702.0},
+            {"Description": "Gross pay - Trevor Donohue - March 2026 (M12)", "AccountCode": "6000", "LineAmount": 3333.33},
+            {"Description": "Employer NIC - Trevor Donohue - March 2026 (M12)", "AccountCode": "6002", "LineAmount": 437.45},
+            {"Description": "Employer pension - Trevor Donohue - March 2026 (M12)", "AccountCode": "6001", "LineAmount": 84.40},
+            {"Description": "Net wages - Chris Jones - March 2026 (M12)", "AccountCode": "2200", "LineAmount": -1153.88},
+            {"Description": "PAYE/NIC payable - March 2026 (M12)", "AccountCode": "2210", "LineAmount": -5000.0},
+            {"Description": "Pensions payable - Trevor Donohue (EE 112.54 / ER 84.40) - March 2026 (M12)", "AccountCode": "2211", "LineAmount": -196.94},
+            {"Description": "Dividend - Robert Jones - March 2026 (M12)", "AccountCode": "471", "LineAmount": 4020.95},
+            {"Description": "Dividend tax - Robert Jones - March 2026 (M12)", "AccountCode": "836", "LineAmount": -281.25},
+        ]
+        self.xero.full["J1"] = {"JournalLines": list(self.lines)}
+        self.logs = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_once(self, **kw):
+        return runner.run_once(self.cfg, xero_factory=lambda app: self.xero,
+                               log=self.logs.append, notify_enabled=False, **kw)
+
+    def mapping(self):
+        names = [n for n in os.listdir(self.clients) if n.endswith(".json")]
+        self.assertEqual(len(names), 1, names)
+        with open(os.path.join(self.clients, names[0])) as fh:
+            return json.load(fh)
+
+    def test_gaps_write_a_shadow_mapping_and_hold(self):
+        s = self.run_once()
+        self.assertEqual(len(s["onboarded"]), 1)
+        m = self.mapping()
+        self.assertEqual(m["mode"], "shadow")
+        self.assertEqual(m["codes"]["paye_payable"], "2210")
+        self.assertEqual(m["employees"]["Simon Thompson"]["pay_code"], "TBC-pay-code")
+        self.assertEqual([h["stage"] for h in s["held"]], ["mapping"])
+        self.assertIn("Simon Thompson", s["held"][0]["note"])
+        self.assertEqual(self.xero.created, [])
+        # the next run finds the mapping file, not a second onboarding
+        s2 = self.run_once()
+        self.assertEqual(s2["onboarded"], [])
+
+    def test_every_code_proven_goes_straight_to_a_draft(self):
+        from msx import summary_parser
+        pay = summary_parser.parse_files([os.path.join(FIX, "browns_apr2026_tabbed.txt")])
+        for e in pay["employees"]:                    # history covers everyone
+            n = e["name"]
+            if n not in ("Chris Jones", "Sally Jones", "Trevor Donohue"):
+                self.xero.full["J1"]["JournalLines"].append(
+                    {"Description": f"Gross pay - {n} - March 2026 (M12)", "AccountCode": "381", "LineAmount": 500.0})
+            if n != "Robert Jones":
+                self.xero.full["J1"]["JournalLines"] += [
+                    {"Description": f"Dividend - {n} - March 2026 (M12)", "AccountCode": "471", "LineAmount": 100.0},
+                    {"Description": f"Dividend tax - {n} - March 2026 (M12)", "AccountCode": "837", "LineAmount": -50.0}]
+        s = self.run_once()
+        m = self.mapping()
+        self.assertEqual(m["mode"], "draft", s["held"])
+        self.assertIn("auto-onboard", m["approved_by"])
+        self.assertEqual(len(s["onboarded"]), 1)
+        self.assertEqual([h["stage"] for h in s["held"] if h["stage"] == "mapping"], [])
+
+    def test_dry_run_and_disabled_do_not_write_a_mapping(self):
+        s = self.run_once(dry_run=True)
+        self.assertEqual(s["onboarded"], [])
+        self.assertEqual([h["stage"] for h in s["held"]], ["mapping"])
+        self.assertEqual(os.listdir(self.clients), [])
+        self.cfg.data["auto_onboard"] = {"enabled": False}
+        s = self.run_once()
+        self.assertEqual(os.listdir(self.clients), [])
+
+    def test_unmatched_org_holds_with_the_manual_command(self):
+        self.xero.tenant_list = [{"tenant_id": "T9", "type": "ORGANISATION",
+                                  "name": "Something Else Ltd"}]
+        s = self.run_once()
+        self.assertEqual([h["stage"] for h in s["held"]], ["mapping"])
+        self.assertIn("msx onboard", s["held"][0]["note"])
+        self.assertEqual(os.listdir(self.clients), [])

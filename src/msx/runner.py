@@ -83,12 +83,84 @@ def _entry(client, period, **kw):
     return d
 
 
+def auto_onboard(ctx, client, period, files, summary, *, original=None):
+    """A report with no mapping: write clients/<slug>.json from the client's
+    own wages journals in Xero (never a guessed code) and return the new
+    Mapping. Complete -> mode_when_complete (draft); gaps -> shadow and a
+    Hold naming them. None when the report is not stable yet."""
+    from . import onboard
+    ao = ctx.cfg.auto_onboard
+    paths = [f["path"] for f in files]
+    for p in paths:
+        if not sources.stable(p, settle_seconds=ctx.cfg.settle_seconds,
+                              sample_wait=ctx.cfg.sample_wait):
+            summary["pending"].append(_entry(client, period,
+                                             note=f"{os.path.basename(p)} "
+                                             "not stable yet"))
+            return None
+    payroll = summary_parser.parse_files(paths)
+    if mapping_mod.normalise_name(payroll.get("client") or "") \
+            != mapping_mod.normalise_name(client):
+        # the folder/file name and the report header disagree: not a new
+        # client, a misfiled report - leave the plain hold for a human
+        raise original or Hold(f"report header '{payroll.get('client')}' does "
+                               f"not match the file name '{client}'", stage="mapping")
+    stub = onboard.stub_for(payroll)
+    try:
+        proposed, report = onboard.propose(payroll, ctx.xero_factory("default"),
+                                           stub, months=ao["months"])
+    except Hold as exc:
+        raise Hold(f"auto-onboard: '{client}' has no mapping and could not be "
+                   f"matched to a connected Xero organisation ({exc}) - run: "
+                   f"msx onboard \"{paths[0]}\" --org \"<exact Xero org name>\"",
+                   stage="mapping")
+    proposed["xero"]["app"] = "default"
+    placeholders = report["placeholders"]
+    mode = ao["mode_when_complete"] if not placeholders else "shadow"
+    proposed["mode"] = mode
+    proposed["notes"] = (f"auto-onboarded by msx run {summary['run_id']} on "
+                         f"{datetime.date.today().isoformat()} from "
+                         f"{report['journals_seen']} wages journal(s) in Xero"
+                         + ("" if not placeholders else
+                            "; placeholders: " + ", ".join(placeholders)))
+    if mode != "shadow":
+        proposed["approved_by"] = "msx auto-onboard (every code proven from Xero history)"
+        proposed["approved_on"] = datetime.date.today().isoformat()
+    try:
+        path = onboard.write_mapping(proposed, ctx.cfg.clients_dir)
+    except FileExistsError as exc:
+        raise Hold(f"auto-onboard: {exc} already exists but does not match the "
+                   f"report header '{client}' - add the header to its aliases",
+                   stage="mapping")
+    ctx.mappings = mapping_mod.load_all(ctx.cfg.clients_dir)
+    m = mapping_mod.find_for_report(ctx.mappings, client)
+    note = (f"mapping {os.path.basename(path)} written in {mode} mode from "
+            f"{report['journals_seen']} Xero wages journal(s)"
+            + (f"; placeholders: {', '.join(placeholders)}" if placeholders else ""))
+    summary["onboarded"].append(_entry(client, period, note=note))
+    ctx.ledger.event(kind="auto_onboard", detail=f"{m.slug} {mode}")
+    ctx.log(f"{client}: {note}")
+    if placeholders:
+        raise Hold(f"auto-onboard: {note} - a human fills the placeholders "
+                   f"(msx chart {m.slug} shows the org's codes), then the next "
+                   "run builds", stage="mapping")
+    return m
+
+
 def process_group(ctx, client, period, files, summary):
     """One client-period, end to end. Appends to the summary buckets."""
     log = ctx.log
     slug = None
     try:
-        m = mapping_mod.find_for_report(ctx.mappings, client)
+        try:
+            m = mapping_mod.find_for_report(ctx.mappings, client)
+        except Hold as exc:
+            if exc.stage != "mapping" or not str(exc).startswith("no client mapping") \
+                    or ctx.dry_run or not ctx.cfg.auto_onboard["enabled"]:
+                raise
+            m = auto_onboard(ctx, client, period, files, summary, original=exc)
+            if m is None:
+                return
         slug = m.slug
         m.ensure_valid()
         if not m.active_for(period):
@@ -516,7 +588,7 @@ def _run_once(cfg, *, xero_factory, log, mode_override, dry_run, only_clients,
     summary = {"run_id": run_id, "machine": ledger.machine,
                "mode": mode_override or "per-client", "posted": [],
                "draft": [], "shadow": [], "skipped": [], "held": [],
-               "pending": [], "failed": [], "warnings": [],
+               "pending": [], "failed": [], "warnings": [], "onboarded": [],
                "already_shadow": 0, "ignored_old": 0, "ignored": []}
     try:
         mode_override = standby_guard(cfg, mode_override, take_over, summary,

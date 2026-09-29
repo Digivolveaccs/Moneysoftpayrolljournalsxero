@@ -82,6 +82,9 @@ def render_report_html(summary):
     if summary["pending"]:
         parts.append("<p><b>Pending (file still syncing)</b></p>")
         parts.append(table(summary["pending"], ["client", "period", "note"]))
+    if summary.get("onboarded"):
+        parts.append("<p><b>New clients mapped from their Xero history</b></p>")
+        parts.append(table(summary["onboarded"], ["client", "period", "note"]))
     if summary.get("warnings"):
         parts.append("<p><b>Warnings</b></p><ul>"
                      + "".join(f"<li>{esc(w)}</li>" for w in summary["warnings"])

@@ -94,6 +94,28 @@ class Config:
         return self.data.get("default_mode", "shadow")
 
     @property
+    def auto_onboard(self):
+        """A report from a client with no mapping: propose the mapping from
+        the client's own wages journals in Xero and carry on. When every
+        code was proven (no placeholder) the client starts in
+        ``mode_when_complete`` (draft: a DRAFT journal for a human to
+        approve in Xero); otherwise shadow, with a hold naming the gaps."""
+        raw = self.data.get("auto_onboard")
+        if raw is None:
+            raw = {}
+        if raw is False:
+            raw = {"enabled": False}
+        if raw is True:
+            raw = {"enabled": True}
+        out = {"enabled": bool(raw.get("enabled", True)),
+               "mode_when_complete": str(raw.get("mode_when_complete", "draft")),
+               "months": int(raw.get("months", 6))}
+        if out["mode_when_complete"] not in ("shadow", "draft"):
+            raise Hold("auto_onboard.mode_when_complete must be shadow or draft",
+                       stage="config")
+        return out
+
+    @property
     def settle_seconds(self):
         return int(self.data.get("settle_seconds", 30))
 

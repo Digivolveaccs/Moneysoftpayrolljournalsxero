@@ -62,7 +62,8 @@ bin/msx run
 |---|---|---|
 | Report filed, everything reconciles, client in `post` mode | POSTED journal created, verified by read-back, recorded | No |
 | Client in `draft` mode | DRAFT created for approval in Xero (or `msx approve`) | Approve |
-| Client in `shadow` mode (default for new clients) | Built and reconciled, nothing sent, shown in the report | No |
+| New client, no mapping yet | Mapping written from the client's own wages journals in Xero; straight to `draft` when every code was proven, else `shadow` and a hold naming the gaps | Only for gaps |
+| Client in `shadow` mode | Built and reconciled, nothing sent, shown in the report | No |
 | Nil payroll | Skipped as nil | No |
 | Already in Xero (ours, or by narration) | Skipped | No |
 | Another wages-looking journal already in that month | HOLD | Yes |

@@ -9,6 +9,12 @@
   "out_dir": "~/.config/msx/out",
   "ledger_csv": "~/Library/CloudStorage/Dropbox-Personal/Dropbox - Moneysoft Backups/Xero journals/ledger.csv",
   "default_mode": "shadow",
+  "auto_onboard": {
+    "_comment": "A report from a client with no mapping: build the mapping from the client's own wages journals in Xero. Every code proven -> the client starts in mode_when_complete (draft = a DRAFT journal to approve in Xero); any gap -> shadow plus a hold naming it.",
+    "enabled": true,
+    "mode_when_complete": "draft",
+    "months": 6
+  },
   "settle_seconds": 30,
   "stability_sample_seconds": 1.0,
   "xero": {

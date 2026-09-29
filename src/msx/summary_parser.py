@@ -248,6 +248,8 @@ def load_text(paths):
     """Concatenate the text of every input (PDFs are converted)."""
     chunks = []
     for path in paths:
+        if not os.path.exists(path):
+            raise Hold(f"report file not found: {path}", stage="discover")
         if path.lower().endswith(".pdf"):
             chunks.append(pdf_to_text(path))
         else:

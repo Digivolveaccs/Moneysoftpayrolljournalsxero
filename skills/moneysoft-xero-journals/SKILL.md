@@ -76,7 +76,16 @@ Each hold names its stage. Do exactly this per stage, nothing more:
 Held rows stay held across runs and are not re-reported; once the cause is
 fixed the next `msx run` clears them automatically.
 
-## Onboarding a client (once per client, ~3 minutes)
+## Onboarding a client (automatic; ~3 minutes when it needs a human)
+
+`msx run` onboards by itself: a report from a client with no mapping makes
+the run read that client's wages journals in Xero and write
+`clients/<slug>.json`. Every code proven -> the client starts in `draft`
+(a DRAFT journal in Xero to approve; `auto_onboard.mode_when_complete`).
+Any gap -> `shadow` plus a `mapping` hold naming the placeholders: fill
+them from `msx chart <slug>` (or Matt), commit, and the next run builds.
+The manual route below is for when the Xero org name differs from the
+report header or a mapping needs redoing.
 
 1. Make sure the client's org is connected to the practice app:
    `msx auth tenants` lists what is connected (about 480 orgs). If missing,
